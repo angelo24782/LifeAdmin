@@ -1,0 +1,10 @@
+node_modules
+dist
+coverage
+playwright-report
+test-results
+pnpm-lock.yaml
+supabase/.temp
+supabase/.branches
+supabase/config.toml
+docs/SPECIFICA.md

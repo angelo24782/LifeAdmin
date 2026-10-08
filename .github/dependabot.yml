@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # TypeScript, il suo parser ESLint e vue-tsc devono avanzare insieme (SPECIFICA §14).
+      typescript-toolchain:
+        patterns:
+          - typescript
+          - typescript-eslint
+          - vue-tsc
+    ignore:
+      # TypeScript ≥ 6.1 non è ancora supportato da typescript-eslint (SPECIFICA §23.1).
+      - dependency-name: typescript
+        versions: ['>=6.1.0']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
