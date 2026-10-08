@@ -1,0 +1,68 @@
+{
+  "name": "lifeadmin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LifeAdmin — your personal life administration assistant (Web, iOS, Android).",
+  "license": "MIT",
+  "packageManager": "pnpm@10.20.0",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.app.json && vue-tsc --noEmit -p tsconfig.node.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test:unit": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "check:bundle": "node scripts/check-bundle.mjs",
+    "supabase:start": "supabase start -x studio,imgproxy,logflare,vector,edge-runtime,supavisor,realtime,storage-api,mailpit",
+    "supabase:stop": "supabase stop",
+    "db:reset": "supabase db reset",
+    "db:lint": "supabase db lint",
+    "db:test": "supabase test db",
+    "db:types": "supabase gen types typescript --local --schema public > src/shared/types/database.ts",
+    "test:integration": "node scripts/run-integration.mjs"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "supabase"
+    ]
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "~5.3.0",
+    "@supabase/supabase-js": "2.117.3",
+    "pinia": "4.0.3",
+    "vue": "3.5.43",
+    "vue-router": "5.4.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "1.64.0",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "^24.19.1",
+    "@vitejs/plugin-vue": "6.0.9",
+    "@vitest/coverage-v8": "5.0.3",
+    "@vue/test-utils": "~2.5.1",
+    "eslint": "10.12.0",
+    "eslint-config-prettier": "~10.1.8",
+    "eslint-plugin-vue": "10.11.1",
+    "eslint-plugin-vuejs-accessibility": "2.6.2",
+    "globals": "~17.13.0",
+    "jsdom": "~30.1.2",
+    "prettier": "~3.9.9",
+    "supabase": "~2.120.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.1",
+    "vite": "8.3.4",
+    "vitest": "5.0.3",
+    "vue-tsc": "3.3.12"
+  }
+}
