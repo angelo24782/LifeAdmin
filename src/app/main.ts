@@ -2,10 +2,12 @@ import { createPinia } from 'pinia'
 import { createApp } from 'vue'
 
 import { loadPlatform, providePlatform } from '@/platform'
-import { EnvValidationError, getEnv } from '@/shared/lib/env'
+import { EnvValidationError, getEnv, type AppEnv } from '@/shared/lib/env'
+import { createSupabaseClient } from '@/shared/lib/supabaseClient'
 import '@/styles/tailwind.css'
 
 import App from './App.vue'
+import { provideSupabase } from './providers/supabase'
 import { createAppRouter } from './router'
 
 function showStartupError(message: string): void {
@@ -24,8 +26,9 @@ function showStartupError(message: string): void {
 }
 
 async function bootstrap(): Promise<void> {
+  let env: AppEnv
   try {
-    getEnv()
+    env = getEnv()
   } catch (error) {
     if (error instanceof EnvValidationError) {
       showStartupError(error.message)
@@ -37,6 +40,16 @@ async function bootstrap(): Promise<void> {
   const platform = await loadPlatform()
   const app = createApp(App)
   providePlatform(app, platform)
+  provideSupabase(
+    app,
+    createSupabaseClient({
+      url: env.VITE_SUPABASE_URL,
+      anonKey: env.VITE_SUPABASE_ANON_KEY,
+      storage: platform.secureStorage,
+      platform: platform.info.name,
+      appVersion: __APP_VERSION__,
+    }),
+  )
   app.use(createPinia())
   app.use(createAppRouter())
   app.mount('#app')

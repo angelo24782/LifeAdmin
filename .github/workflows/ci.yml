@@ -56,6 +56,34 @@ jobs:
           path: dist
           retention-days: 7
 
+  database:
+    name: Database (lint, pgTAP, tipi, integrazione RLS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Stack locale ridotto (Postgres, Auth, PostgREST, Kong): bastano per i test di M2.
+      - name: Avvio Supabase locale
+        run: pnpm supabase:start
+      - name: Lint dello schema
+        run: pnpm db:lint
+      - name: Test pgTAP (schema, vincoli, RLS)
+        run: pnpm db:test
+      - name: I tipi TypeScript generati sono aggiornati
+        run: |
+          pnpm db:types
+          git diff --exit-code -- src/shared/types/database.ts
+      - name: Test di integrazione (isolamento A/B via PostgREST)
+        run: pnpm test:integration
+      - name: Stop Supabase
+        if: always()
+        run: pnpm exec supabase stop --no-backup
+
   e2e:
     name: E2E (Playwright)
     needs: [quality]

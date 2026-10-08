@@ -8,3 +8,6 @@ supabase/.temp
 supabase/.branches
 supabase/config.toml
 docs/SPECIFICA.md
+src/shared/types/database.ts
+supabase/migrations
+supabase/tests

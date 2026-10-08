@@ -17,6 +17,8 @@ export default defineConfig([
     'supabase/.temp/**',
     'ios/**',
     'android/**',
+    // Generato da `supabase gen types` (formato non controllato da noi).
+    'src/shared/types/database.ts',
   ]),
 
   js.configs.recommended,
@@ -61,6 +63,8 @@ export default defineConfig([
     files: [
       'vite.config.ts',
       'vitest.config.ts',
+      'vitest.integration.config.ts',
+      'config/**/*.ts',
       'playwright.config.ts',
       'tests/**/*.ts',
       'e2e/**/*.ts',

@@ -6,7 +6,7 @@ rinnovi in un posto solo, con avvisi che arrivano quando serve agire.
 **Piattaforme**: Web, iOS (App Store) e Android (Google Play), con **una sola codebase** Vue 3 + TypeScript
 (le app native arrivano con Capacitor nella fase mobile, M14–M22).
 
-> **Stato**: M1 — base del progetto. Le funzionalità di prodotto arrivano nelle milestone successive.
+> **Stato**: M2 — fondamenta database (schema, RLS, client Supabase). Le funzionalità di prodotto arrivano nelle milestone successive.
 > Il riferimento completo (prodotto, architettura, database, sicurezza, roadmap) è
 > [`docs/SPECIFICA.md`](docs/SPECIFICA.md) (v0.3).
 
@@ -49,14 +49,14 @@ Le variabili d'ambiente sono validate all'avvio (`src/shared/lib/env.ts`): se ma
 non valide, l'app mostra un messaggio chiaro. Le variabili `VITE_*` sono **pubbliche** (finiscono nel
 browser): non inserirvi mai secret.
 
-| Variabile                 | Obbligatoria | Descrizione                                              |
-| ------------------------- | ------------ | -------------------------------------------------------- |
-| `VITE_SUPABASE_URL`       | sì           | URL dell'API Supabase (locale: `http://127.0.0.1:54321`) |
-| `VITE_SUPABASE_ANON_KEY`  | sì           | Chiave pubblica/anon (locale: da `supabase status`, M2)  |
-| `VITE_APP_URL`            | sì           | URL pubblico dell'app                                    |
-| `VITE_APP_ENV`            | sì           | `development` \| `staging` \| `production`               |
-| `VITE_TURNSTILE_SITE_KEY` | no           | Site key Cloudflare Turnstile                            |
-| `VITE_SENTRY_DSN`         | no           | DSN Sentry                                               |
+| Variabile                 | Obbligatoria | Descrizione                                                                     |
+| ------------------------- | ------------ | ------------------------------------------------------------------------------- |
+| `VITE_SUPABASE_URL`       | sì           | URL dell'API Supabase (locale: `http://127.0.0.1:54321`)                        |
+| `VITE_SUPABASE_ANON_KEY`  | sì           | Chiave pubblica/anon (locale: `ANON_KEY` di `pnpm exec supabase status -o env`) |
+| `VITE_APP_URL`            | sì           | URL pubblico dell'app                                                           |
+| `VITE_APP_ENV`            | sì           | `development` \| `staging` \| `production`                                      |
+| `VITE_TURNSTILE_SITE_KEY` | no           | Site key Cloudflare Turnstile                                                   |
+| `VITE_SENTRY_DSN`         | no           | DSN Sentry                                                                      |
 
 I secret lato server (chiavi email, FCM, `service_role`) vivono solo nelle Edge Function e in
 GitHub Secrets, mai nel repository.
@@ -70,13 +70,38 @@ pnpm format       # Prettier (scrive); pnpm format:check per solo verifica
 pnpm typecheck    # vue-tsc su app e tooling
 ```
 
+## Database locale (Supabase)
+
+Richiede Docker. Tutto gira in locale: nessun progetto cloud.
+
+```bash
+pnpm supabase:start   # avvia Postgres, Auth e PostgREST (la prima volta scarica le immagini Docker)
+pnpm db:reset         # ricrea il database applicando le migration in supabase/migrations
+pnpm db:lint          # lint dello schema
+pnpm db:test          # test pgTAP in supabase/tests/database (schema, vincoli, RLS)
+pnpm db:types         # rigenera src/shared/types/database.ts dallo schema locale
+pnpm supabase:stop    # ferma lo stack
+```
+
+- Le modifiche allo schema si fanno **solo** con nuove migration (`pnpm exec supabase migration new <nome>`);
+  una migration già in `main` non si modifica.
+- Il contratto che i client possono usare (colonne, privilegi, errori) è in
+  [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md).
+- Le chiavi locali non sono segreti e non vanno scritte nel repository: i test di integrazione le
+  leggono da `supabase status`.
+
 ## Test
 
 ```bash
-pnpm test:unit       # Vitest
-pnpm test:coverage   # Vitest con coverage
-pnpm test:e2e        # Playwright (build + preview + browser)
+pnpm test:unit         # Vitest (unit)
+pnpm test:coverage     # Vitest con coverage
+pnpm test:integration  # isolamento A/B via PostgREST reale (richiede `pnpm supabase:start`)
+pnpm db:test           # pgTAP (richiede `pnpm supabase:start`)
+pnpm test:e2e          # Playwright (build + preview + browser)
 ```
+
+I test di integrazione creano gli utenti A e B a runtime con la `service_role` locale (solo nel
+contesto di test) e password casuali: nessuna credenziale è scritta nel repository.
 
 In locale gli E2E usano il Google Chrome installato; in CI si usa il Chromium di Playwright
 (`pnpm exec playwright install chromium`).
@@ -93,11 +118,15 @@ pnpm preview         # anteprima locale del bundle
 
 ```
 src/
-├─ app/         bootstrap, router
+├─ app/         bootstrap, router, provider (piattaforma, Supabase)
+├─ features/    service per funzionalità (categories, profile, items): accesso ai dati, senza UI
 ├─ pages/       una per route, solo composizione
 ├─ platform/    UNICO punto di contatto tra app e piattaforma (web / native / fake)
-├─ shared/      librerie condivise (env, ...)
+├─ shared/      librerie condivise (env, client Supabase, errori) e tipi del database
 └─ styles/      token di design (Tailwind 4, CSS-first)
+supabase/
+├─ migrations/  schema versionato (unica fonte di verità del database)
+└─ tests/       test pgTAP
 ```
 
 Regole chiave (dettagli in `docs/SPECIFICA.md` §14):
