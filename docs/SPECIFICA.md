@@ -1,7 +1,9 @@
 # LifeAdmin — Specifica Tecnica e di Prodotto (MVP v1)
 
-Stato: **approvata; Architecture Gate superato con correzioni** · Versione 0.3 · Data 2026-10-08
+Stato: **approvata; allineata a quanto implementato fino a M2** · Versione 0.4 · Data 2026-10-08
 Questo documento è il riferimento per tutto lo sviluppo. Se il codice diverge, si aggiorna prima la specifica.
+
+**Changelog v0.4 (allineamento a M2)**: recepisce le decisioni **effettivamente implementate** in M2, senza introdurre nuove decisioni. Correzioni: validazione di `profiles.timezone` con trigger su `pg_catalog.pg_timezone_names` (non CHECK); nessun `seed.sql` (le 8 categorie di sistema sono nella migration `categories`; nessun utente o credenziale di test nel repository, gli utenti A/B dei test di integrazione sono creati a runtime con `service_role`); `owner_id` con `default auth.uid()`, senza privilegio di INSERT/UPDATE per il client, `WITH CHECK` come seconda barriera, immutabile. Allineamenti: schema `private` per le funzioni interne; `item_completions` in sola lettura dal client; `privacy_version` verificata da una funzione server-side versionata via migration, con rifiuto atomico della registrazione e `privacy_accepted_at = now()` lato database; `life_items` usa solo categorie visibili all'utente; test RLS via PostgREST reale oltre a pgTAP; tabelle `life_items`, `recurrence_rules` e `item_completions` create già in M2 (la logica resta in M5/M6). Sezioni toccate: 2 (F1), 5, 6, 10, 12, 13, 15, 17, 20 (M2, M5, M6), 22.8.
 
 **Changelog v0.3 (Architecture Gate)**: verificati 10 punti (§23). Correzioni: TypeScript pinnato a 6.0.x (TS 7 non supportato da `typescript-eslint`); `vee-validate` sostituito con `@tanstack/vue-form` (incompatibile con zod 4); minimi nativi iOS 16.4 e WebView Android 111; link email verso `/auth/confirm` con pulsante (anti-scanner) e OTP primario; logout con `scope: 'local'` e pulizia Keychain al primo avvio dopo reinstallazione; cancellazione account con coda `account_deletions` e registro anti-ripristino; cache offline cifrata con politica esatta; AASA/assetlinks per ambiente e fallback schema custom; classificazione requisiti store (obbligatori/condizionati/best practice); piano CI iOS da Windows; controllo versione minima già nella prima release e regole di retrocompatibilità; purge token push a 270 giorni (non 60). Milestone M1–M3, M11, M14, M16, M18–M20 aggiornate.
 
@@ -93,7 +95,7 @@ Regole trasversali: ogni azione che chiama la rete ha **loading** (skeleton per 
 ### F1 — Registrazione
 - **Comportamento**: form `/register`; invio → Supabase Auth `signUp` → redirect a `/verify-email`, che chiede il **codice a 6 cifre** inviato per email (`verifyOtp`, tipo `signup`). L'email contiene codice **e** link; il codice è il flusso primario perché non dipende da deep link (funziona uguale su Web, iOS e Android anche se l'email si apre in un'altra app).
 - **Input**: email, password (≥ 10 caratteri, max 72), checkbox obbligatoria "Accetto Termini e Privacy" (link). Nome opzionale (display name).
-- **Output**: utente in `auth.users`, riga `profiles` creata da trigger con `privacy_accepted_at`, `privacy_version`. Email di conferma.
+- **Output**: utente in `auth.users`, riga `profiles` creata da trigger con `privacy_accepted_at` (`now()` lato database) e `privacy_version`. Email di conferma. Se `privacy_version` manca o non è supportata dal backend, la registrazione è **rifiutata in modo atomico** (nessun utente Auth senza profilo).
 - **Regole**: email normalizzata (trim, lowercase); conferma email obbligatoria prima del login; messaggio **neutro** se l'email esiste già ("Se l'indirizzo è valido riceverai una email") per non rivelare l'esistenza di account; CAPTCHA (Turnstile) prima della beta.
 - **Edge case**: email già registrata; link di conferma scaduto/già usato → `/verify-email` con "Invia di nuovo" (cooldown 60 s); password comune/breve; doppio click sul submit.
 - **Loading**: pulsante in stato "Creazione in corso…". **Vuoto**: n/a. **Errore**: validazione inline per campo; errore rete/rate limit → banner "Troppi tentativi, riprova tra qualche minuto".
@@ -285,6 +287,8 @@ Principi: tutte le tabelle in `public`, **RLS abilitata ovunque**, PK `uuid` (`g
 
 Per garantire integrità del proprietario, `life_items` ha `unique (id, owner_id)` e le tabelle figlie usano **FK composta `(item_id, owner_id) → life_items(id, owner_id)`**: un figlio non può mai appartenere a un utente diverso dal suo item.
 
+Le funzioni e i trigger interni vivono nello schema **`private`**, non esposto da PostgREST; in `public` non esiste nessuna funzione applicativa (nessun RPC esposto). Ogni migration revoca tutti i privilegi sulle proprie tabelle a `public`, `anon` e `authenticated` e concede solo il minimo necessario, anche per colonna.
+
 ### Tipi enum
 `item_status ('active','completed')` · `recurrence_unit ('day','week','month','year')` · `notification_status ('pending','processing','sent','failed','skipped','cancelled')` · `notification_channel ('email')` (estendibile a `push`).
 
@@ -293,16 +297,16 @@ Per garantire integrità del proprietario, `life_items` ha `unique (id, owner_id
 |---|---|---|---|---|
 | id | uuid | no | – | **PK**, **FK → auth.users(id) on delete cascade** |
 | display_name | text | sì | – | check `char_length ≤ 80` |
-| timezone | text | no | `'Europe/Rome'` | check: esiste in `pg_timezone_names` (via funzione) |
+| timezone | text | no | `'Europe/Rome'` | validato da **trigger** (before insert/update) che verifica l'esistenza in `pg_catalog.pg_timezone_names` (un CHECK non può dipendere da un catalogo) |
 | locale | text | no | `'it'` | check `in ('it')` (estendibile) |
 | email_notifications_enabled | boolean | no | `true` | |
 | notification_hour | smallint | no | `9` | check `between 0 and 23` |
 | onboarding_completed_at | timestamptz | sì | – | |
-| privacy_accepted_at | timestamptz | no | – | impostato dal trigger di signup da metadata |
-| privacy_version | text | no | – | es. `'2026-10-01'` |
+| privacy_accepted_at | timestamptz | no | – | `now()` lato database al momento della creazione del profilo; un timestamp fornito dal client è ignorato |
+| privacy_version | text | no | – | formato `YYYY-MM-DD`; letta dai metadata del signup e verificata contro le versioni supportate (es. `'2026-10-01'`) |
 | created_at / updated_at | timestamptz | no | `now()` | |
 
-Indici: PK. L'email resta solo in `auth.users` (nessuna duplicazione). Creazione: trigger `after insert on auth.users` (`security definer`).
+Indici: PK. L'email resta solo in `auth.users` (nessuna duplicazione). Creazione: trigger `after insert on auth.users` (`private.handle_new_user`, `security definer`), che delega a `private.create_profile_for_user`: la creazione dell'utente è di Supabase Auth, l'attivazione del profilo applicativo avviene solo con un consenso privacy valido. La versione supportata è definita dalla funzione server-side `private.supported_privacy_versions()`, modificabile solo con una nuova migration. Se `privacy_version` manca o non è supportata, l'intera registrazione è rifiutata in modo atomico (nessun utente Auth senza profilo).
 
 ### `categories`
 | Colonna | Tipo | Null | Default | Note |
@@ -315,13 +319,13 @@ Indici: PK. L'email resta solo in `auth.users` (nessuna duplicazione). Creazione
 | sort_order | smallint | no | `100` | |
 | created_at / updated_at | timestamptz | no | `now()` | |
 
-Unique: `(slug) where owner_id is null`; `(owner_id, slug) where owner_id is not null`. Indice: `(owner_id)`. Seed di sistema in migrazione (§10). Nell'MVP nessun utente può scrivere in questa tabella.
+Unique: `(slug) where owner_id is null`; `(owner_id, slug) where owner_id is not null`. Indice: `(owner_id)`. Le 8 categorie di sistema (§10) sono inserite direttamente dalla migration `categories` (idempotente per slug); **nessun `seed.sql`**. Nell'MVP nessun utente può scrivere in questa tabella.
 
 ### `life_items`
 | Colonna | Tipo | Null | Default | Note |
 |---|---|---|---|---|
 | id | uuid | no | `gen_random_uuid()` | PK |
-| owner_id | uuid | no | `auth.uid()` | FK → auth.users on delete cascade |
+| owner_id | uuid | no | `auth.uid()` | FK → auth.users on delete cascade; non inseribile né aggiornabile dal client (§6) |
 | category_id | uuid | no | – | FK → categories(id) on delete restrict |
 | title | text | no | – | check `char_length(btrim(title)) between 1 and 120` |
 | due_date | date | no | – | |
@@ -340,7 +344,7 @@ Valuta: solo EUR nell'MVP, nessuna colonna `currency` (si aggiungerà con migraz
 |---|---|---|---|---|
 | id | uuid | no | `gen_random_uuid()` | PK |
 | item_id | uuid | no | – | **unique**; FK composta `(item_id, owner_id)` → life_items on delete cascade |
-| owner_id | uuid | no | – | |
+| owner_id | uuid | no | `auth.uid()` | non inseribile né aggiornabile dal client (§6) |
 | interval_unit | recurrence_unit | no | – | |
 | interval_count | smallint | no | `1` | check `between 1 and 120` |
 | anchor_date | date | no | – | data di riferimento da cui si calcolano le occorrenze (§9) |
@@ -357,7 +361,7 @@ Mensile = (`month`,1); annuale = (`year`,1); personalizzata = qualsiasi combinaz
 | due_date | date | no | – | scadenza che è stata gestita |
 | completed_at | timestamptz | no | `now()` | |
 
-Indice: `(item_id, completed_at desc)`. Solo scrittura tramite `complete_life_item`.
+Indici: `(item_id, completed_at desc)`, `(owner_id)`. **Sola lettura per il client** (nessun privilegio né policy di INSERT/UPDATE/DELETE); la scrittura avverrà solo tramite `complete_life_item` (M6).
 
 ### `notifications` (avvisi pianificati e loro stato)
 | Colonna | Tipo | Null | Default | Note |
@@ -418,20 +422,22 @@ Indici: `(item_id)`, `(owner_id)`. Trigger quota: ≤ 5 documenti per item, ≤ 
 
 ## 6. Row Level Security
 
-Regole generali: `alter table … enable row level security` su **tutte** le tabelle di `public`; nessuna policy per `anon`; `auth.uid()` sempre incapsulato come `(select auth.uid())` (valutato una volta per query); grant espliciti per colonna dove serve; funzioni `security definer` con `set search_path = ''` e `revoke execute … from public, anon, authenticated` salvo quelle esplicitamente chiamabili.
+Regole generali: `alter table … enable row level security` su **tutte** le tabelle di `public`; nessuna policy per `anon`; `auth.uid()` sempre incapsulato come `(select auth.uid())` (valutato una volta per query); grant espliciti per colonna dove serve (ogni migration fa `revoke all` a `public`, `anon`, `authenticated` e riconcede il minimo); funzioni `security definer` con `set search_path = ''` e `revoke execute … from public, anon, authenticated` salvo quelle esplicitamente chiamabili. Le funzioni interne stanno nello schema `private` (non esposto da PostgREST).
 
 | Tabella | select | insert | update | delete |
 |---|---|---|---|---|
-| `profiles` | `id = auth.uid()` | solo trigger (nessuna policy client) | `id = auth.uid()`, **grant update limitato a** `display_name, timezone, email_notifications_enabled, notification_hour, onboarding_completed_at` | nessuna (cancellazione via account) |
+| `profiles` | `id = auth.uid()` | solo trigger (nessuna policy né privilegio client) | `id = auth.uid()`, **grant update limitato a** `display_name, timezone, email_notifications_enabled, notification_hour, onboarding_completed_at` | nessuna (cancellazione via account) |
 | `categories` | `owner_id is null or owner_id = auth.uid()` | nessuna (MVP) | nessuna | nessuna |
-| `life_items` | `owner_id = auth.uid()` | `with check owner_id = auth.uid()` | `using/with check owner_id = auth.uid()` | `owner_id = auth.uid()` |
-| `recurrence_rules` | `owner_id = auth.uid()` | `with check owner_id = auth.uid()` (+ FK composta garantisce che l'item sia dello stesso owner) | idem | idem |
-| `item_completions` | `owner_id = auth.uid()` | **nessuna** (solo `complete_life_item`) | nessuna | nessuna (cascata) |
+| `life_items` | `owner_id = auth.uid()` | `with check owner_id = auth.uid()` **e categoria visibile all'utente** (di sistema o propria); `owner_id` non inseribile | `using/with check owner_id = auth.uid()` e categoria visibile; `owner_id` non aggiornabile | `owner_id = auth.uid()` |
+| `recurrence_rules` | `owner_id = auth.uid()` | `with check owner_id = auth.uid()` (+ FK composta garantisce che l'item sia dello stesso owner); `owner_id` non inseribile | idem; `item_id` e `owner_id` non aggiornabili | idem |
+| `item_completions` | `owner_id = auth.uid()` | **nessuna** (nessun privilegio client; solo `complete_life_item`, M6) | nessuna | nessuna (cascata) |
 | `notifications` | `owner_id = auth.uid()` | **nessuna** (solo trigger DB) | **nessuna** (solo `service_role`) | nessuna (cascata) |
 | `documents` | `owner_id = auth.uid()` | `with check owner_id = auth.uid()` | `owner_id = auth.uid()`, grant update solo su `uploaded_at` | `owner_id = auth.uid()` |
 | `storage_cleanup_queue`, `rate_limits` | nessuna | nessuna | nessuna | nessuna (solo `service_role`) |
 
-Esempio (pattern da riusare):
+**`owner_id`** (tabelle private): è valorizzato da `default auth.uid()`; il client **non ha il privilegio** di INSERT né di UPDATE sulla colonna `owner_id` (privilegi di colonna), quindi non può né indicarlo né cambiarlo; la `WITH CHECK` della RLS resta comunque come **seconda barriera** di sicurezza; l'owner è **immutabile** (trigger `private.prevent_owner_change`, valido anche per il ruolo di servizio). La visibilità della categoria in `life_items` è verificata con una subquery su `categories` soggetta alla RLS dell'utente: una categoria personale di un altro utente non è referenziabile.
+
+Esempio (pattern da riusare, semplificato):
 ```sql
 create policy life_items_select_own on public.life_items
   for select to authenticated using (owner_id = (select auth.uid()));
@@ -452,7 +458,7 @@ create policy life_items_delete_own on public.life_items
 
 **Predisposizione Family**: l'accesso passa sempre dalla colonna `owner_id` e da funzioni/policy centralizzate; per condividere si estenderanno le policy con `is_household_member(...)` e la policy di Storage passerà dal prefisso cartella alla verifica sulla tabella `documents` (che avrà già l'informazione di appartenenza). Nessuna dipendenza del codice client dalla struttura dei path.
 
-**Test obbligatori RLS (pgTAP, §17)**: utente A non vede/modifica/cancella nulla di B su ogni tabella; non può inserire con `owner_id` di B; non può creare un documento/regola/notifica su un item di B; `anon` non legge nulla; il client non può scrivere su `notifications`; non può cambiare `owner_id`.
+**Test obbligatori RLS (pgTAP e integrazione via PostgREST reale, §17)**: utente A non vede/modifica/cancella nulla di B su ogni tabella; non può inserire con `owner_id` di B; non può creare un documento/regola/notifica su un item di B; non può usare la categoria personale di B (può usare quelle di sistema); `anon` non legge nulla; il client non può scrivere su `notifications` né su `item_completions`; non può cambiare `owner_id`. I test via PostgREST (supabase-js reale, utenti A/B creati a runtime) sono obbligatori perché i soli test pgTAP possono mascherare problemi di privilegi.
 
 ---
 
@@ -529,7 +535,7 @@ Campi **volutamente esclusi** dall'MVP: fornitore, numero polizza/contratto, lin
 
 I template sono **dati statici** in `src/features/templates/templates.ts` (chiave, nome, categoria, titolo, ricorrenza suggerita, preavvisi, avvertenza). Selezionarli **non imposta mai una data**: l'utente la inserisce sempre, e ogni avvertenza è visibile accanto al campo. Nessuna regola normativa è calcolata o codificata: i suggerimenti di ricorrenza sono modificabili e vanno **[V]** controllati con fonti ufficiali (ACI, Motorizzazione, Ministero dell'Interno, Polizia di Stato) prima del rilascio.
 
-**Categorie di sistema (seed)**: Auto e mezzi (`auto`), Assicurazioni (`assicurazioni`), Casa (`casa`), Documenti personali (`documenti`), Abbonamenti (`abbonamenti`), Contratti e utenze (`contratti`), Garanzie (`garanzie`), Altro (`altro`). Nessuna categoria "Salute" nell'MVP.
+**Categorie di sistema (inserite dalla migration `categories`)**: Auto e mezzi (`auto`), Assicurazioni (`assicurazioni`), Casa (`casa`), Documenti personali (`documenti`), Abbonamenti (`abbonamenti`), Contratti e utenze (`contratti`), Garanzie (`garanzie`), Altro (`altro`). Nessuna categoria "Salute" nell'MVP.
 
 | Template | Categoria | Precompilati | Ricorrenza suggerita | Avvertenza mostrata |
 |---|---|---|---|---|
@@ -593,7 +599,7 @@ I template sono **dati statici** in `src/features/templates/templates.ts` (chiav
 |---|---|
 | Base giuridica | Esecuzione del servizio richiesto (account, scadenze, avvisi); gli avvisi sono comunicazioni di servizio, non marketing |
 | Privacy Policy e Termini | Pagine `/privacy` e `/terms` in italiano, versionate (`privacy_version`); contenuto da far **revisionare da un professionista** prima della beta |
-| Consenso | Checkbox obbligatoria (non preselezionata) a Termini e Privacy in registrazione; salvati data e versione. **Nessun consenso marketing**, nessuna email promozionale nell'MVP |
+| Consenso | Checkbox obbligatoria (non preselezionata) a Termini e Privacy in registrazione; salvati data (generata dal database) e versione (verificata lato server). **Nessun consenso marketing**, nessuna email promozionale nell'MVP |
 | Cookie | Solo storage tecnico (sessione). Nessun analytics di terze parti nell'MVP, quindi nessun banner cookie; eventuale analytics futuro privacy-friendly e senza cookie |
 | Export | "Esporta i miei dati" (JSON con profilo, scadenze, regole, avvisi, metadati documenti e link firmati 24 h ai file) |
 | Cancellazione account | Immediata e definitiva: file in Storage → righe DB (cascata) → utente Auth; conferma con password; email di conferma dell'avvenuta cancellazione |
@@ -613,7 +619,7 @@ I template sono **dati statici** in `src/features/templates/templates.ts` (chiav
 
 - **Autenticazione**: Supabase Auth, email+password, conferma email obbligatoria, password ≥ 10 caratteri, protezione password compromesse (HIBP) se disponibile nel piano **[V]**, JWT con scadenza breve (1 h) + refresh token con rotazione, `redirect URLs` in allow-list. OAuth rimandato.
 - **Autorizzazione**: **RLS su tutto** (§6) come unica barriera reale; il client è considerato ostile. Test pgTAP in CI.
-- **Isolamento**: FK composte `(item_id, owner_id)`; `owner_id` immutabile (trigger); `default auth.uid()` + `with check`.
+- **Isolamento**: FK composte `(item_id, owner_id)`; `owner_id` immutabile (trigger); `default auth.uid()` senza privilegio di INSERT/UPDATE per il client, con `with check` come seconda barriera.
 - **Validazione input**: doppia: **zod** nel client (UX) e **check constraint/trigger** nel DB (sicurezza); le Edge Function validano il body con zod. Testo reso sempre come testo (Vue escapa); mai `v-html` su dati utente.
 - **Secrets**: nessun secret nel repository; `.env.local` ignorato da git; secret server in `supabase secrets` / Vault; la `service_role key` esiste **solo** nelle Edge Function e in CI come secret, **mai** nel frontend. Chiavi `VITE_*` sono pubbliche per definizione (solo anon/publishable key). Scansione secrets in CI (gitleaks).
 - **Rate limiting**: limiti Auth di Supabase (login, signup, reset, invio email) configurati restrittivi; Turnstile su signup/login/reset prima della beta; Edge Function sensibili con `check_rate_limit` (export 1/h, delete 3/h, reinvio email gestito da Auth); quote DB (item, documenti, byte) come difesa da abusi di scrittura; CDN/WAF davanti all'app quando si sceglie l'hosting.
@@ -731,7 +737,7 @@ Regole: i componenti non importano `supabase` direttamente (passano da `service.
 |---|---|
 | **Frontend (SPA condivisa Web/iOS/Android)** | UI e shell, validazione per UX, formattazione, calcolo di "oggi"/stato in base al fuso, chiamate CRUD verso PostgREST (con RLS), upload verso Storage, richiesta signed URL, orchestrazione degli stati. Identico sui tre target: il backend **non distingue** la piattaforma, salvo per la registrazione del dispositivo push |
 | **Livello nativo (solo iOS/Android, via `platform/native`)** | Archiviazione sicura del token, registrazione push e ricezione tap, fotocamera/selettore file, visualizzatore documenti, condivisione, deep link, haptics, stato rete. **Nessuna logica di business** |
-| **PostgreSQL** | Dati, vincoli, **RLS**, quote (trigger), `complete_life_item`, `recurrence_next`, `sync_item_notifications`, `claim_due_notifications`, `handle_new_user`, `set_updated_at`, coda di pulizia, `check_rate_limit`, job `pg_cron` |
+| **PostgreSQL** | Dati, vincoli, **RLS**, quote (trigger), `complete_life_item`, `recurrence_next`, `sync_item_notifications`, `claim_due_notifications`, `handle_new_user`, `set_updated_at` (le funzioni interne nello schema `private`), coda di pulizia, `check_rate_limit`, job `pg_cron` |
 | **Supabase Auth** | Registrazione, conferma email e reset con **OTP a 6 cifre + link**, login, sessioni/JWT con refresh, rate limit auth, (futuro) OAuth (Sign in with Apple obbligatorio su iOS se si aggiunge un login social **[V]**) e MFA |
 | **Storage** | Bucket privato `documents`, policy RLS, limiti dimensione/MIME, URL firmati |
 | **Edge Functions (Deno/TS)** | `send-notifications` (cron, `service_role`; canali email **e push**), `delete-account`, `export-data`, `cleanup-storage` (cron: coda + orfani + log vecchi + token push scaduti). Codice condiviso in `functions/_shared` (client Supabase admin, adapter email `resend`/`mock`, adapter push `fcm`/`mock`, zod, logger, rate limit) |
@@ -741,7 +747,7 @@ Regole: i componenti non importano `supabase` direttamente (passano da `service.
 
 **Operazioni che non devono MAI essere eseguite dal client**: usare la `service_role`; scrivere/aggiornare `notifications`, `item_completions`, `storage_cleanup_queue`, `rate_limits`; inviare email o **push** (nessuna chiave FCM/APNs nel client); cancellare l'utente in `auth.users` o gli oggetti Storage in massa; leggere/scrivere dati di un altro utente (impedito da RLS); impostare `owner_id` diverso dal proprio; saltare le quote; chiamare `claim_due_notifications`; calcolare le occorrenze future di una ricorrenza in modo autonomo (si usa la funzione DB).
 
-Supabase locale: CLI `supabase` come **devDependency** (Docker è disponibile in locale; la CLI non è installata globalmente ed è eseguita con `pnpm exec supabase`). Migrazioni, `seed.sql` (solo dati di test locali), `config.toml` versionati.
+Supabase locale: CLI `supabase` come **devDependency** (Docker è disponibile in locale; la CLI non è installata globalmente ed è eseguita con `pnpm exec supabase`). Migrazioni e `config.toml` versionati; **nessun `seed.sql`**: i dati di sistema stanno nelle migrazioni e nessun utente o credenziale di test è nel repository (gli utenti dei test sono creati a runtime, solo nei test di integrazione, con `service_role`).
 
 ---
 
@@ -789,6 +795,7 @@ Test/CI: `.env.test` generato dal job con i valori di `supabase status` (chiavi 
 
 **Integration (Supabase locale)**
 - **pgTAP** (`supabase test db`): RLS su ogni tabella (A vs B, `anon`), `owner_id` immutabile, FK composte, quote (200 item, 5 doc/item, 100 MB), `recurrence_next` (31 gen, 29 feb, ogni N mesi, bisestili), `complete_life_item` (non ricorrente, anticipo, ritardo, doppia chiamata), `sync_item_notifications` (creazione, cambio data/preavvisi, ora legale, "oggi già passata", cancellazione), `claim_due_notifications` (concorrenza `SKIP LOCKED`, recupero `processing` orfane), unicità anti-duplicati, trigger di signup/profili, policy Storage.
+- **Integrazione via PostgREST reale** (`pnpm test:integration`, Vitest + supabase-js sullo stack locale): isolamento A/B attraverso il percorso API vero (lettura, modifica, cancellazione, relazioni cross-user, categoria personale di un altro utente, `anon`), consenso privacy con Supabase Auth reale. Gli utenti di test sono creati a runtime con `service_role` (usata solo qui) e password casuali.
 - **Edge Function** (Deno test con adapter email `mock`): invio ok, errore temporaneo → backoff, errore permanente → `failed`, secret mancante → 401, doppia invocazione simultanea → un solo invio, item modificato dopo il claim → non inviato; `delete-account` (file+dati rimossi), `export-data` (solo dati del chiamante), rate limit.
 
 **E2E (Playwright)** su Supabase locale + `EMAIL_DRIVER=mock`; conferma email letta da Inbucket/Mailpit di Supabase locale; controllo accessibilità con axe su ogni pagina.
@@ -865,9 +872,9 @@ Ogni milestone è piccola, verificabile e committabile. **DoD comune a tutte**: 
 
 **M2 — Fondamenta database e RLS**
 - *Obiettivo*: schema base, profili, categorie, RLS, tipi generati.
-- *File*: `supabase/migrations/*_foundation.sql`, `seed.sql`, `supabase/tests/*`, `src/shared/types/database.ts`, `src/shared/lib/supabaseClient.ts`.
-- *DB*: `profiles`, `categories` (+ seed), enum, trigger `handle_new_user`/`set_updated_at`, policy.
-- *Test*: pgTAP su RLS profili/categorie, trigger di signup.
+- *File*: `supabase/migrations/*` (5 migration: funzioni di supporto, `profiles`, `categories`, `life_items`, `recurrence_rules` e `item_completions`), `supabase/tests/*`, `tests/integration/*`, `src/shared/types/database.ts`, `src/shared/lib/supabaseClient.ts`, `docs/API_CONTRACT.md`. **Nessun `seed.sql`.**
+- *DB*: `profiles`, `categories` (8 categorie di sistema inserite dalla migration), `life_items`, `recurrence_rules`, `item_completions` (solo schema, FK composte e RLS; logica in M5/M6), enum, schema `private`, trigger `handle_new_user`/`set_updated_at`/validazione fuso/immutabilità di `owner_id`, funzione server-side delle versioni privacy supportate, policy.
+- *Test*: pgTAP su schema, vincoli, FK composte, RLS di tutte le tabelle e trigger di signup (consenso assente → rifiuto, versione non supportata → rifiuto, versione supportata → profilo, timestamp generato dal database); integrazione via PostgREST reale (isolamento A/B, categoria personale di un altro utente, `anon`, consenso con Auth reale).
 - *Multipiattaforma*: `supabaseClient.ts` crea il client con lo **storage di sessione iniettato** dall'adapter `SecureStorage` (web: `localStorage`), `flowType: 'pkce'`, `detectSessionInUrl: false`, `autoRefreshToken: true` e header globali **`x-app-version`** e **`x-app-platform`** (§23.10).
 - *Gate v0.3*: tutte le query usano **colonne esplicite** (mai `select *`); le funzioni RPC pubbliche sono parte del contratto API (§23.10).
 - *DoD*: `supabase start` + `db reset` + `test db` verdi; tipi generati committati; **azione esterna**: nessuna (Docker locale).
@@ -890,14 +897,14 @@ Ogni milestone è piccola, verificabile e committabile. **DoD comune a tutte**: 
 **M5 — Life Items (CRUD)**
 - *Obiettivo*: creare, elencare, vedere, modificare, eliminare.
 - *File*: `features/items/*`, `domain/itemStatus|money|dates`, `pages/Items*`, `ItemForm`, `ItemList`, `StatusBadge`.
-- *DB*: `life_items`, trigger quota e `owner_id`, FK composta, indici, policy.
+- *DB*: tabella `life_items`, `owner_id` immutabile, FK composta, indici e policy **già creati in M2**; resta il trigger di quota.
 - *Test*: unit dominio, pgTAP RLS/quota, E2E create/edit/delete e isolamento tra utenti.
 - *DoD*: CRUD completo con loading/vuoto/errore; filtri in query param; RLS verificata; avviso data passata.
 
 **M6 — Ricorrenze e completamento**
 - *Obiettivo*: regole, `recurrence_next`, "Segna come gestita", storico.
 - *File*: `features/recurrence/*`, sezione ricorrenza in `ItemForm`, `CompleteButton`, `CompletionHistory`.
-- *DB*: `recurrence_rules`, `item_completions`, funzioni `recurrence_next` e `complete_life_item`.
+- *DB*: tabelle `recurrence_rules` e `item_completions` **già create in M2**; qui le funzioni `recurrence_next` e `complete_life_item`.
 - *Test*: pgTAP su tutti i casi del §9; E2E annuale/mensile.
 - *DoD*: nessuna deriva di date, 29 febbraio corretto, doppio click idempotente, etichette in italiano.
 
@@ -1218,7 +1225,7 @@ Test e CI usano `platform/fake`.
 | Distribuzione mobile | Build di debug su dispositivo/emulatore | TestFlight + test interno/chiuso Play | App Store + Google Play |
 | Email / Push | `mock` (Mailpit locale) | provider reale + FCM (progetto Firebase staging) | provider reale + FCM produzione |
 | Associated domain | – (schema custom solo per debug) | `staging.<dominio>` | `app.<dominio>` |
-| Dati | seed di test | dati sintetici/tester | dati reali |
+| Dati | dati sintetici creati dai test (nessun utente o credenziale nel repository) | dati sintetici/tester | dati reali |
 
 Gli appId diversi consentono di installare le tre versioni affiancate. La scelta dell'ambiente avviene a build-time (`CAP_ENV`, modalità Vite), mai a runtime.
 
