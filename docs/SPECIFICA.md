@@ -1,7 +1,9 @@
 # LifeAdmin — Specifica Tecnica e di Prodotto (MVP v1)
 
-Stato: **approvata, aggiornata con il requisito multipiattaforma** · Versione 0.2 · Data 2026-10-08
+Stato: **approvata; Architecture Gate superato con correzioni** · Versione 0.3 · Data 2026-10-08
 Questo documento è il riferimento per tutto lo sviluppo. Se il codice diverge, si aggiorna prima la specifica.
+
+**Changelog v0.3 (Architecture Gate)**: verificati 10 punti (§23). Correzioni: TypeScript pinnato a 6.0.x (TS 7 non supportato da `typescript-eslint`); `vee-validate` sostituito con `@tanstack/vue-form` (incompatibile con zod 4); minimi nativi iOS 16.4 e WebView Android 111; link email verso `/auth/confirm` con pulsante (anti-scanner) e OTP primario; logout con `scope: 'local'` e pulizia Keychain al primo avvio dopo reinstallazione; cancellazione account con coda `account_deletions` e registro anti-ripristino; cache offline cifrata con politica esatta; AASA/assetlinks per ambiente e fallback schema custom; classificazione requisiti store (obbligatori/condizionati/best practice); piano CI iOS da Windows; controllo versione minima già nella prima release e regole di retrocompatibilità; purge token push a 270 giorni (non 60). Milestone M1–M3, M11, M14, M16, M18–M20 aggiornate.
 
 **Changelog v0.2**: LifeAdmin è un prodotto **Web + iOS + Android** con una sola codebase Vue 3 + TypeScript distribuita sulle app native tramite **Capacitor**. Modificate le sezioni 1, 2 (F1/F2), 3, 4, 14, 15, 16, 17, 18, 20, 21; aggiunta la sezione **22 — Mobile & Store Distribution**. Le sezioni 5, 6 e 11 restano valide e vengono estese in 22.5.
 
@@ -33,6 +35,7 @@ Terminologia: in UI l'entità si chiama **"Scadenza"**; nel codice e nel DB **`l
 20. Roadmap tecnica e Definition of Done
 21. Decisioni tecniche, azioni esterne, rischi aperti
 22. **Mobile & Store Distribution** (iOS, Android, Web, push, build, signing, release, ambienti, requisiti store)
+23. **Architecture Gate v0.3** (verifica dei 10 punti, specifiche vincolanti, esito)
 
 ---
 
@@ -202,7 +205,7 @@ Route in inglese (stabili), etichette in italiano. Guard di navigazione: `guestO
 | `/verify-email` | Istruzioni + reinvio email | pubblica | `AuthCard`, `ResendEmailButton` | email (query/stato) |
 | `/forgot-password` | Richiesta reset | guestOnly | `ForgotPasswordForm` | – |
 | `/reset-password` | Nuova password | sessione recovery | `ResetPasswordForm` | – |
-| `/auth/callback` | Scambio codice Supabase (conferma/recovery) | pubblica | spinner | query params |
+| `/auth/confirm` | Atterraggio del **link** email (conferma/recovery): mostra un pulsante "Conferma" e solo al click chiama `verifyOtp({ token_hash, type })` (nessuna verifica automatica al caricamento, §23.4) | pubblica | `ConfirmCard` | `token_hash`, `type` |
 | `/onboarding` | Setup iniziale | auth, onboarding incompleto | `OnboardingStepper`, `PreferencesStep`, `TemplatePicker`, `QuickDatesStep` | profilo, template statici, categorie |
 | `/dashboard` | Stato generale | auth + onboarding | `StatusSummary`, `UrgentList`, `UpcomingList`, `EmptyState` | scadenze attive, profilo |
 | `/items` | Elenco e filtri | auth + onboarding | `ItemFilters`, `ItemList`, `ItemRow`, `StatusBadge` | scadenze, categorie |
@@ -626,9 +629,34 @@ I template sono **dati statici** in `src/features/templates/templates.ts` (chiav
 
 ## 14. Architettura frontend
 
-Stack **[D]**: Vue 3 (`<script setup>`), TypeScript `strict` (+ `noUncheckedIndexedAccess`), Vite, Pinia, Vue Router, Tailwind CSS, `@supabase/supabase-js`, zod + vee-validate, Headless UI Vue, lucide, date-fns (locale `it`), `@fontsource-variable/inter`, Vitest + Vue Test Utils + Testing Library, Playwright + `@axe-core/playwright`, ESLint (flat config, `typescript-eslint`, `eslint-plugin-vue`, `vuejs-accessibility`) + Prettier. Package manager **pnpm**, Node LTS (versione pinnata in `.nvmrc`/`engines`).
+Stack **[D]**: Vue 3 (`<script setup>`), TypeScript `strict` (+ `noUncheckedIndexedAccess`) **pinnato a 6.0.x (non 7.x, §23.1)**, Vite, Pinia, Vue Router, Tailwind CSS, `@supabase/supabase-js`, **zod 4 + `@tanstack/vue-form` (Standard Schema; non più vee-validate, §23.1)**, Headless UI Vue, lucide, date-fns (locale `it`), `@fontsource-variable/inter`, Vitest + Vue Test Utils + Testing Library, Playwright + `@axe-core/playwright`, ESLint (flat config, `typescript-eslint`, `eslint-plugin-vue`, `vuejs-accessibility`) + Prettier. Package manager **pnpm**, **Node 24 LTS** (pinnato in `.nvmrc`/`engines`; minimo richiesto dallo stack: Node 22.12).
 
-**Multipiattaforma [D]**: **Capacitor** (versione corrente 8, requisiti verificati in §22.7) per impacchettare la stessa SPA in app iOS e Android, con plugin `@capacitor/app`, `@capacitor/status-bar`, `@capacitor/keyboard`, `@capacitor/haptics`, `@capacitor/camera`, `@capacitor/browser`, `@capacitor/share`, `@capacitor/network`, un plugin di **secure storage** (Keychain/Keystore) e un plugin **push FCM** (scelta finale nello spike di M18 **[V]**). Nessun framework UI mobile aggiuntivo (no Ionic UI/Quasar): si usa il design system proprio (Tailwind + Headless UI) con due shell (§4). Il progetto è un **singolo package** (niente monorepo): `src/` è condiviso, `ios/` e `android/` sono i progetti nativi generati da Capacitor e committati. Costruiti in M14, ma l'architettura che li rende possibili esiste già da M1.
+**Matrice di compatibilità verificata il 2026-10-08 (npm registry)** — M1 installa **queste** versioni (range `~`/`^` entro la minor, lockfile obbligatorio):
+| Pacchetto | Versione | Vincolo che l'ha determinata |
+|---|---|---|
+| Node | 24.x (ora 24.20) | Vite 8 `^20.19‖≥22.12`, Vitest 5 `^22.12‖^24‖≥26`, Capacitor CLI `≥22`, supabase-js `≥22`, ESLint 10 `≥24` o 22.13 |
+| vue | 3.5.x (3.5.43) | vue-router 5 richiede `^3.5.34`; pinia 4 `^3.5.11` |
+| vite / @vitejs/plugin-vue | 8.3.x / 6.0.x | plugin-vue 6 supporta Vite 5–8; vue-router 5 richiede Vite `^7.3‖^8`; Vitest 5 `^6.4‖^7‖^8` |
+| **typescript** | **6.0.x (6.0.3)** — **NON 7.0.2** | `typescript-eslint` 8.71 dichiara `typescript <6.1.0`; TS 7 (port nativo) è `latest` su npm ma non ancora supportato dall'ecosistema lint |
+| vue-tsc | 3.3.x | peer `typescript ≥5` |
+| pinia / vue-router | 4.0.x / 5.4.x | pinia peer `typescript ≥5.6` |
+| tailwindcss + @tailwindcss/vite | 4.3.x | Tailwind 4 richiede Chrome 111 / Safari 16.4 / Firefox 128 → vincola i target mobile (§23.1) |
+| vitest | 5.0.x | |
+| eslint / typescript-eslint / eslint-plugin-vue / eslint-plugin-vuejs-accessibility | 10.x / 8.71.x / 10.x / 2.6.x | tutti compatibili con ESLint 10 |
+| zod | 4.x | **`@vee-validate/zod` richiede zod ^3.24 → incompatibile**; sostituito |
+| @tanstack/vue-form | 1.33.x | usa Standard Schema (zod 4) **[V]** da confermare nello spike di M3 |
+| @supabase/supabase-js | 2.x (2.117) | Node ≥ 22 |
+| @playwright/test | 1.64.x | |
+| @capacitor/core, cli, ios, android | **8.5.x** | CLI Node ≥ 22 |
+| Plugin Capacitor 8 | app 8.1, browser 8.0, camera 8.2, preferences 8.0, haptics 8.0, keyboard 8.0, network 8.0, share 8.0, status-bar 8.0, assets 3.0 | tutti disponibili per Capacitor 8 |
+| `@capacitor-firebase/messaging` | 8.5.x (peer `firebase ^12.6`, solo parte web) | scelta push, §23.2 |
+| `@aparajita/capacitor-secure-storage` | 8.0.x | candidato secure storage **[V]** in M16 |
+| `@sentry/capacitor` | 4.4.x (peer `@sentry/vue` 10.69 esatto) | allineare le due versioni |
+Regola: nessun aggiornamento maggiore (es. TS 7) senza ripassare questa tabella; Renovate/Dependabot raggruppa gli aggiornamenti di `typescript`, `typescript-eslint` e `vue-tsc`.
+
+**Target browser/WebView [D]**: `build.target` **esplicito** = default di Vite 8 `baseline-widely-available` (Chrome 111, Safari 16.4, iOS 16.4). Per questo i minimi nativi sono **iOS 16.4** e **WebView Android ≥ 111** (§22.3, §22.4), non i minimi di Capacitor (iOS 15, WebView 60).
+
+**Multipiattaforma [D]**: **Capacitor** (versione corrente 8, requisiti verificati in §22.7) per impacchettare la stessa SPA in app iOS e Android, con plugin `@capacitor/app`, `@capacitor/status-bar`, `@capacitor/keyboard`, `@capacitor/haptics`, `@capacitor/camera`, `@capacitor/browser`, `@capacitor/share`, `@capacitor/network`, un plugin di **secure storage** (Keychain/Keystore) e **`@capacitor-firebase/messaging`** per le push FCM **[D]** (restituisce il token FCM su entrambe le piattaforme; il plugin ufficiale `@capacitor/push-notifications` su iOS fornisce il token APNs, §23.2). Nessun framework UI mobile aggiuntivo (no Ionic UI/Quasar): si usa il design system proprio (Tailwind + Headless UI) con due shell (§4). Il progetto è un **singolo package** (niente monorepo): `src/` è condiviso, `ios/` e `android/` sono i progetti nativi generati da Capacitor e committati. Costruiti in M14, ma l'architettura che li rende possibili esiste già da M1.
 
 Organizzazione **per funzionalità**, con tre livelli netti: *pagina (route, sottile) → feature (componenti + store + service) → domain (logica pura, senza Vue né Supabase)*. La logica di business non sta mai nei componenti UI.
 
@@ -830,6 +858,7 @@ Ogni milestone è piccola, verificabile e committabile. **DoD comune a tutte**: 
 **M1 — Setup progetto**
 - *Obiettivo*: scheletro eseguibile e qualità automatica.
 - *File*: `package.json`, `vite/ts/eslint/prettier/tailwind/vitest/playwright config`, `src/app/*`, `src/pages/HomePage`, **`src/platform/` (ports.ts, index.ts, web/, fake/)**, `.nvmrc`, `.env.example`, `.github/workflows/ci.yml`, `README.md`, `supabase init`.
+- *Gate v0.3*: installare **esattamente** la matrice di §14 (TypeScript 6.0.x, Vite 8, Tailwind 4, Vitest 5, ESLint 10; niente vee-validate); `build.target` esplicito (Chrome 111/Safari 16.4); test CI che fallisce se `typescript` ≥ 6.1 senza aggiornare `typescript-eslint`.
 - *Vincoli multipiattaforma*: regola ESLint che vieta `@capacitor/*` fuori da `src/platform/native`; `viewport-fit=cover` e variabili safe-area; router history mode; nessun asset da CDN; test di architettura (bundle Web senza Capacitor).
 - *DB*: nessuna. *Test*: smoke test dell'app, test della validazione env, test delle regole di architettura.
 - *DoD*: `pnpm dev/lint/typecheck/test/build` funzionano; CI verde; README con setup locale; tema Tailwind con i token del §4; le porte di `platform/` esistono con implementazione web e fake.
@@ -839,13 +868,15 @@ Ogni milestone è piccola, verificabile e committabile. **DoD comune a tutte**: 
 - *File*: `supabase/migrations/*_foundation.sql`, `seed.sql`, `supabase/tests/*`, `src/shared/types/database.ts`, `src/shared/lib/supabaseClient.ts`.
 - *DB*: `profiles`, `categories` (+ seed), enum, trigger `handle_new_user`/`set_updated_at`, policy.
 - *Test*: pgTAP su RLS profili/categorie, trigger di signup.
-- *Multipiattaforma*: `supabaseClient.ts` crea il client con lo **storage di sessione iniettato** dall'adapter `SecureStorage` (web: `localStorage`).
+- *Multipiattaforma*: `supabaseClient.ts` crea il client con lo **storage di sessione iniettato** dall'adapter `SecureStorage` (web: `localStorage`), `flowType: 'pkce'`, `detectSessionInUrl: false`, `autoRefreshToken: true` e header globali **`x-app-version`** e **`x-app-platform`** (§23.10).
+- *Gate v0.3*: tutte le query usano **colonne esplicite** (mai `select *`); le funzioni RPC pubbliche sono parte del contratto API (§23.10).
 - *DoD*: `supabase start` + `db reset` + `test db` verdi; tipi generati committati; **azione esterna**: nessuna (Docker locale).
 
 **M3 — Autenticazione**
 - *Obiettivo*: registrazione, conferma email, login, logout, reset password, guard.
-- *File*: `features/auth/*`, `pages/Login|Register|VerifyEmail|ForgotPassword|ResetPassword|AuthCallback`, `router/guards.ts`, `layouts/AuthLayout`, `shared/ui` (Button, Input, Card, Toast), template email Auth in `supabase/config.toml`/`templates`.
+- *File*: `features/auth/*`, `pages/Login|Register|VerifyEmail|ForgotPassword|ResetPassword|AuthConfirm`, `router/guards.ts`, `layouts/AuthLayout`, `shared/ui` (Button, Input, Card, Toast), template email Auth in `supabase/config.toml`/`templates`.
 - *DB*: consenso in metadata → profilo.
+- *Gate v0.3*: form con `@tanstack/vue-form` + zod 4 (spike iniziale per confermare Standard Schema **[V]**, fallback: composable proprio); pagina `/auth/confirm` con pulsante; scadenza OTP 10 minuti; `signOut({ scope: 'local' })` come logout predefinito; dopo il reset password `signOut({ scope: 'others' })` (§23.3, §23.4).
 - *Multipiattaforma*: conferma email e reset con **codice OTP a 6 cifre** (`verifyOtp`) come flusso primario, link come alternativa; template email con codice e link; gestore deep link con whitelist dei path (la parte nativa arriva in M16).
 - *Test*: unit (schemi, guard, whitelist redirect e deep link), E2E registrazione/login/reset (Mailpit) sia con codice sia con link, a11y.
 - *DoD*: flussi E2E verdi; nessuna enumerazione di account; password policy attiva; `redirect` sicuro; il flusso con codice non dipende da nessun deep link.
@@ -899,6 +930,7 @@ Ogni milestone è piccola, verificabile e committabile. **DoD comune a tutte**: 
 - *DoD*: nessun URL pubblico; signed URL 60 s; orfani ripuliti; progress e errori per file.
 
 **M11 — Impostazioni e GDPR**
+- *Gate v0.3*: `delete-account` come processo ripristinabile con tabella `account_deletions`, blocco immediato dell'utente, rimozione Storage per prefisso, verifica finale e registro anti-ripristino (§23.5); pagina pubblica `/account-deletion` (richiesta da Google Play, §23.8).
 - *Obiettivo*: profilo, preferenze, export, cancellazione, pagine legali.
 - *File*: `features/settings/*`, `pages/Settings|Privacy|Terms`, `supabase/functions/export-data|delete-account`.
 - *DB*: nessuna o piccole (rate limit).
@@ -923,6 +955,7 @@ Ogni milestone è piccola, verificabile e committabile. **DoD comune a tutte**: 
 Prerequisiti esterni comuni (da concordare, nessuno eseguito senza il tuo ok): vedi §22.13. In sintesi: **un Mac o un servizio cloud con macOS** per iOS (il PC attuale è Windows), account Apple Developer, account Google Play Console, progetto Firebase, dominio.
 
 **M14 — Integrazione Capacitor e shell nativa**
+- *Gate v0.3*: iOS deployment target **16.4**, `minWebViewVersion` **111** + schermata di WebView non supportata; **client `app-config.json` già in questa milestone** (fail-open, §23.10); header `x-app-version`/`x-app-platform` attivi; verifica se `cap add ios` si può eseguire da Windows (**[V]**, altrimenti nella prima "finestra Mac", §23.9).
 - *Obiettivo*: la SPA gira come app su simulatore iOS ed emulatore Android.
 - *File*: `capacitor.config.ts` (per `CAP_ENV`), `ios/`, `android/`, `resources/`, `src/platform/native/{app,statusBar,keyboard,network}.ts`, script `pnpm cap:sync|ios|android`, `docs/MOBILE.md`.
 - *DB*: nessuna.
@@ -937,6 +970,7 @@ Prerequisiti esterni comuni (da concordare, nessuno eseguito senza il tuo ok): v
 - *DoD*: checklist §22.12 superata su 4 dispositivi; target touch conformi; scroll fluido su Android economico **[I]**; test con dimensione testo al 200%.
 
 **M16 — Autenticazione nativa e deep link**
+- *Gate v0.3*: politica token/Keychain/logout/reinstallazione di §23.3; AASA e `assetlinks.json` per ambiente, route ammesse e fallback schema custom di §23.7; hosting senza rewrite SPA su `/.well-known/*`. **Richiede Apple Team ID** (Apple Developer attivo) → avviare l'iscrizione entro M12.
 - *Obiettivo*: sessione sicura sul dispositivo e link che aprono l'app.
 - *File*: `platform/native/secureStorage.ts`, `platform/native/deepLinks.ts`, file `apple-app-site-association` e `assetlinks.json`, intent-filter Android, Associated Domains iOS, template email Auth finali.
 - *DB*: nessuna.
@@ -951,6 +985,7 @@ Prerequisiti esterni comuni (da concordare, nessuno eseguito senza il tuo ok): v
 - *DoD*: foto e PDF caricabili entro i limiti di §7; apertura via signed URL nel visualizzatore di sistema; nessun URL salvato; nessun permesso di archiviazione ampio.
 
 **M18 — Notifiche push**
+- *Gate v0.3*: plugin `@capacitor-firebase/messaging`; gestione errori FCM, TTL, canale Android, revoca/refresh token, RPC `unregister_push_device` e coda di rimozione offline di §23.2; il client **ignora/filtra canali sconosciuti** nelle liste di avvisi (compat con versioni precedenti, §23.10).
 - *Obiettivo*: avvisi push affidabili, una volta sola, con apertura diretta dell'item.
 - *File*: `supabase/functions/send-notifications` (driver `fcm`/`mock`), `_shared/push.ts`, `platform/native/push.ts`, `features/reminders/*` (permesso contestuale), `NotificationSettings` (canali), `docs/PUSH.md`.
 - *DB*: `push_devices`, `notification_deliveries`, enum `notification_channel` + `'push'`, RPC `register_push_device`, colonna `profiles.push_notifications_enabled`, estensione di `sync_item_notifications` (§22.5).
@@ -958,6 +993,7 @@ Prerequisiti esterni comuni (da concordare, nessuno eseguito senza il tuo ok): v
 - *DoD*: push ricevuta su iOS e Android in staging, una sola volta per avviso; tap apre `/items/:id`; opt-out per canale funziona; nessun dato sensibile nel payload; token rimosso al logout.
 
 **M19 — Resilienza e offline**
+- *Gate v0.3*: implementare **esattamente** la politica di cache di §23.6 (contenuto, cifratura AES-GCM con chiave in SecureStorage, TTL 7/30 giorni, invalidazione, wipe al logout); la cache esiste **solo sulle app native**.
 - *Obiettivo*: nessuna schermata bianca senza rete; ultimi dati consultabili.
 - *File*: cache di sola lettura di lista scadenze/dettagli (storage locale), banner offline, gestione errori di rete, Sentry per le app (scrubbing PII).
 - *DB*: nessuna.
@@ -965,6 +1001,7 @@ Prerequisiti esterni comuni (da concordare, nessuno eseguito senza il tuo ok): v
 - *DoD*: offline mostra gli ultimi dati con banner e disabilita le scritture con messaggio chiaro (**nessuna scrittura offline in v1**); nessuna pagina di errore del browser.
 
 **M20 — CI/CD e firma mobile**
+- *Gate v0.3*: piano CI iOS da Windows di §23.9 (runner macOS in GitHub Actions + fastlane + chiave API App Store Connect; workflow manuale una tantum per creare certificati con `match`); lint delle migrazioni e suite di contratto "client N-1" in CI (§23.10).
 - *Obiettivo*: build firmate e distribuite automaticamente ai tester.
 - *File*: `fastlane/*`, `.github/workflows/mobile-release.yml`, `docs/RELEASE.md`, gestione versioni, `app-config.json` (versione minima).
 - *DB*: nessuna.
@@ -1021,7 +1058,7 @@ Esito:
 1. *Percezione "sito dentro un'app" e rifiuto Apple 4.2* → shell nativa, gesti, push, fotocamera, share, offline in lettura (M15, M17–M19), review con account demo.
 2. *Prestazioni su Android economici* → bundle piccoli, liste leggere, test su dispositivo di fascia bassa a ogni release (§22.12).
 3. *Dipendenza dalle versioni di Xcode/Android Studio* (Capacitor 8 richiede Xcode 26+, Android Studio Otter 2025.2.1+, JDK 21, Node 22+, target API 36 **[V]**) → aggiornamento pianificato ogni 6–12 mesi, CI mobile notturna che rileva rotture.
-4. *Plugin push/secure storage di terze parti* → spike in M16/M18 per scegliere plugin attivi e manutenuti; porta `platform/` isola il cambio.
+4. *Plugin push/secure storage di terze parti* → push deciso (`@capacitor-firebase/messaging`), secure storage da confermare con prova su dispositivo in M16; la porta `platform/` isola il cambio.
 5. *Sviluppo iOS richiede macOS* (oggi si lavora su Windows) → vedi §22.13.
 
 ### 21.2 Altre decisioni tecniche
@@ -1053,7 +1090,9 @@ Esito:
 | Notifiche | Tabella + pg_cron + Edge Function + idempotency key | Niente code esterne, costi bassi, nessun duplicato |
 | Reminder | `reminder_days` sull'item, istanze in `notifications` | Niente tabella ridondante |
 | Template | Statici nel codice | Versionati con le release, nessun costo DB |
-| Form | zod + vee-validate | Schema unico riusabile e tipizzato |
+| Form | zod 4 + `@tanstack/vue-form` (Standard Schema) | `@vee-validate/zod` è incompatibile con zod 4 (peer zod ^3); schema unico riusabile e tipizzato |
+| TypeScript | 6.0.x pinnato (non 7.x) | `typescript-eslint` non supporta ancora TS ≥ 6.1 |
+| Target minimi nativi | iOS 16.4, WebView Android 111 | Baseline di Vite 8 e Tailwind 4 |
 | UI headless | Headless UI Vue + Tailwind | Accessibilità di modal/menu senza reinventare |
 | E2E email | Mailpit/Inbucket locale + driver `mock` | Test deterministici senza provider |
 | Email provider | Resend (da verificare regione UE/DPA) | Semplice, idempotency key, ottimo per transazionali |
@@ -1096,7 +1135,7 @@ Legenda: **[V]** = requisito esterno da riverificare sulle fonti ufficiali al mo
 - Il Web funziona nel browser anche per chi non scarica l'app; i link nelle email aprono l'app se installata, altrimenti il Web.
 
 ### 22.3 Strategia iOS
-- App Capacitor (WKWebView) con progetto Xcode in `ios/`, **iOS deployment target 15** (requisito Capacitor 8, *verificato ott. 2026*), Swift Package Manager come default per i plugin.
+- App Capacitor (WKWebView) con progetto Xcode in `ios/`, **iOS deployment target 16.4** (il minimo di Capacitor 8 è 15, *verificato ott. 2026*, ma Vite 8 e Tailwind 4 richiedono Safari 16.4: su iOS 15–16.3 gli stili si romperebbero), Swift Package Manager come default per i plugin.
 - Capability: **Push Notifications**, **Associated Domains** (`applinks:app.<dominio>`), Background Modes → solo *Remote notifications* se necessario per la ricezione.
 - Stringhe d'uso dei permessi in italiano (fotocamera, libreria foto se usata) e **privacy manifest** (`PrivacyInfo.xcprivacy`) **[V]**.
 - Build solo con **Xcode 26+ / SDK iOS 26**: dal 28 aprile 2026 App Store Connect rifiuta i caricamenti con SDK precedenti (*verificato ott. 2026*).
@@ -1104,7 +1143,7 @@ Legenda: **[V]** = requisito esterno da riverificare sulle fonti ufficiali al mo
 - Sviluppo: richiede macOS (§22.13).
 
 ### 22.4 Strategia Android
-- App Capacitor (WebView di sistema) con progetto Gradle in `android/`; Capacitor 8: **minSdk 24, compileSdk/targetSdk 36, JDK 21** (*verificato ott. 2026*). Dal 31 agosto 2026 le nuove app e gli aggiornamenti devono avere target API 36 (*verificato ott. 2026*; estensione possibile fino al 1 novembre 2026).
+- App Capacitor (WebView di sistema) con progetto Gradle in `android/`; Capacitor 8: **minSdk 24, compileSdk/targetSdk 36, JDK 21** (*verificato ott. 2026*). **`android.minWebViewVersion = 111`** in `capacitor.config.ts` (il default di Capacitor è 60, che lascerebbe passare WebView incompatibili con Tailwind 4/Vite 8; sotto la soglia Capacitor scrive solo un errore nel log) + `server.errorPath` e controllo all'avvio con schermata "Aggiorna Android System WebView" (§23.1). Dal 31 agosto 2026 le nuove app e gli aggiornamenti devono avere target API 36 (*verificato ott. 2026*; estensione possibile fino al 1 novembre 2026).
 - **Edge-to-edge** obbligatorio sulle versioni recenti di Android **[V]**: gestire gli inset di sistema (safe area) in `MobileShell`.
 - Permessi minimi: `POST_NOTIFICATIONS` (runtime da Android 13), fotocamera solo se si usa l'acquisizione diretta; **nessun** permesso di archiviazione ampio (si usa il selettore di sistema).
 - Tasto/gesto **Indietro** gestito con `@capacitor/app` (navigazione a stack, uscita solo dalla radice).
@@ -1139,13 +1178,13 @@ pg_cron ─► Edge Function send-notifications
 
 **Ciclo di vita dei token**
 - Registrazione: al login e a ogni avvio dell'app (e quando il sistema rinnova il token).
-- Rimozione: al logout (cancellazione riga), alla cancellazione account (cascata), su risposta FCM `UNREGISTERED`/`INVALID_ARGUMENT` (marcato `invalid_token` e disabilitato), pulizia dei dispositivi non visti da > 60 giorni (cron di `cleanup-storage`).
+- Rimozione: al logout (cancellazione riga), alla cancellazione account (cascata), su risposta FCM `UNREGISTERED` (o `INVALID_ARGUMENT` imputabile al token) → `invalid_token` e disabilitato; **pulizia dei dispositivi non visti da > 270 giorni** (scadenza dei token Android secondo FCM **[V]**) — *non* a 60 giorni: chi non apre l'app da mesi è proprio chi ha più bisogno delle push. Dettagli completi (errori FCM, retry, TTL, canali Android, revoca) in §23.2.
 
 **Permessi e UX**: la richiesta del permesso **non** appare al primo avvio. Appare in modo contestuale dopo la creazione delle prime scadenze (fine onboarding) con una schermata che spiega il valore ("Vuoi ricevere un avviso prima delle scadenze?") e solo dopo mostra la richiesta di sistema (Android 13+ la richiede a runtime). Se negato: stato chiaro in Impostazioni con scorciatoia alle impostazioni di sistema; l'email continua a funzionare.
 
 **Tap sulla notifica**: l'app legge `path`, lo valida con la whitelist dei deep link (§3) e naviga; se la sessione non è attiva passa dal login con `redirect`.
 
-**Provider**: FCM per entrambe le piattaforme (la chiave APNs si carica su Firebase). Plugin client da scegliere in uno spike all'inizio di M18 fra `@capacitor/push-notifications` e un plugin FCM unificato **[V]** (su iOS il plugin ufficiale restituisce di default il token APNs, non FCM, salvo integrazione dell'SDK Firebase).
+**Provider**: FCM per entrambe le piattaforme (la chiave APNs `.p8` si carica su Firebase). Plugin client **deciso**: `@capacitor-firebase/messaging` (token FCM su iOS e Android); verifica su dispositivo reale in M18 (§23.2).
 
 ### 22.6 Livello nativo: porte e adapter
 
@@ -1188,9 +1227,11 @@ Gli appId diversi consentono di installare le tre versioni affiancate. La scelta
 - **iOS**: chiave API di App Store Connect (`.p8`) come secret; certificati e profili gestiti con **fastlane match** (repository privato cifrato) o firma automatica in CI; chiave **APNs** caricata su Firebase.
 - **Flusso di rilascio**: tag `mobile-v1.2.0` → CI → build firmate → TestFlight / Play test interno → test manuale con checklist §22.12 → promozione manuale: iOS review + rilascio a fasi; Android test chiuso → produzione con rollout graduale.
 - **Cadenza [R]**: Web continuo; app ogni 2–4 settimane (salvo hotfix). Note di rilascio in italiano.
-- **Versione minima supportata**: `/app-config.json` (es. `{ "minAppVersion": { "ios": "1.0.0", "android": "1.0.0" } }`) letto all'avvio; sotto la soglia, schermata "Aggiorna l'app" con link allo store. Serve per dismettere API vecchie senza lasciare utenti rotti.
+- **Versione minima supportata**: `/app-config.json` letto all'avvio; sotto la soglia, schermata "Aggiorna l'app" con link allo store. **Il controllo deve essere già presente nella prima versione pubblicata** (non si può forzare l'aggiornamento di una versione che non lo contiene): è un requisito di M14, non di M20. Schema, cache e regole in §23.10.
 - **Compatibilità API**: ogni migrazione è *expand → migrate → contract* su almeno due versioni mobile; nessuna rimozione di colonne/funzioni usate da versioni supportate.
 - **Hotfix**: correzioni critiche lato server immediate; lato app, release d'emergenza con review accelerata se necessario **[V]**. Live update del bundle Web: opzionale, da valutare solo dopo aver verificato le regole degli store **[V]**.
+
+> **Nota v0.3**: le checklist 22.10 e 22.11 restano come elenco operativo, ma la **classificazione ufficiale** (obbligatori / condizionati / best practice, con `[V]`) è in §23.8.
 
 ### 22.10 Requisiti futuri App Store (iOS)
 - [ ] **Apple Developer Program** attivo (individuale o organizzazione; l'organizzazione richiede un D-U-N-S) **[V]** e accesso ad App Store Connect.
@@ -1242,3 +1283,253 @@ Gli appId diversi consentono di installare le tre versioni affiancate. La scelta
 
 ### 22.14 Cosa NON si fa nell'MVP mobile
 Scrittura offline e sincronizzazione, task in background, widget, Apple Watch/Wear OS, biometria, scanner documenti con ritaglio, condivisione verso l'app da altre app (share target), login social, acquisti in-app, notifiche rich, tablet ottimizzati, dark mode. Restano P1/P2 e il design (porte, shell, token CSS) non li preclude.
+
+---
+
+## 23. Architecture Gate v0.3
+
+Verifica eseguita il 2026-10-08 con controlli sul registro npm (versioni, `engines`, peer dependency) e su documentazione ufficiale/fonti pubbliche. **[V]** = dato sensibile al tempo o non confermato da fonte ufficiale: va ricontrollato alla milestone indicata. Stato: **OK** / **DA CORREGGERE** / **DA VERIFICARE**. Nella colonna "Stato" indico la situazione *trovata* e, tra parentesi, l'esito dopo le modifiche di questa versione.
+
+| # | Punto | Stato trovato | Rischio se ignorato | Modifica alla specifica | Milestone |
+|---|---|---|---|---|---|
+| 1 | Compatibilità Vue/Vite/Capacitor/TS | **DA CORREGGERE** (corretto) | Build lint rotta (TS 7), dipendenze con peer conflittuali (vee-validate/zod), app con stili rotti su iOS < 16.4 e WebView vecchie | Matrice versioni pinnata (§14), TS 6.0.x, TanStack Form, iOS 16.4, WebView 111 | M1, M3, M14 |
+| 2 | Push FCM/APNs | **DA CORREGGERE** (corretto) + **DA VERIFICARE** su dispositivi | Push mai consegnate su iOS (token APNs inviato a FCM), token validi cancellati dopo 60 giorni, duplicati/avvisi persi, push a un utente dopo il logout | Plugin deciso, errori/retry/TTL/canale Android, revoca, purge a 270 giorni (§23.2) | M18 |
+| 3 | Auth + Keychain/Keystore | **DA CORREGGERE** (corretto) | Logout che espelle l'utente da tutti i dispositivi, sessione "fantasma" dopo reinstallazione su iOS, refresh bloccato in background | Politica token e logout `scope: 'local'`, flag primo avvio (§23.3) | M2, M16 |
+| 4 | OTP 6 cifre + link | **DA CORREGGERE** (corretto) | Link consumato dagli scanner antivirus delle email, flussi duplicati confusi, brute force dell'OTP | `/auth/confirm` con pulsante, scadenza 10 min, regole di duplicazione (§23.4) | M3 |
+| 5 | Cancellazione account | **DA CORREGGERE** (corretto) | Cancellazione bloccata o a metà (utente con file in Storage), dati residui, ripristino da backup che resuscita l'account | Processo ripristinabile, inventario dati, registro anti-ripristino (§23.5) | M11 |
+| 6 | Offline sola lettura | **DA CORREGGERE** (era non definito; ora definito) | Dati personali in chiaro sul telefono, cache che sopravvive al logout, dati vecchi spacciati per aggiornati | Politica di cache esatta (§23.6) | M19 |
+| 7 | Universal/App Links | **DA CORREGGERE** (corretto) + **DA VERIFICARE** su dispositivi | Link che aprono il browser invece dell'app, verifica fallita per rewrite SPA o per firma Play, route non whitelisted | Config per ambiente, whitelist, fallback schema custom (§23.7) | M13, M16 |
+| 8 | Requisiti store | **DA VERIFICARE** (classificati) | Rifiuti in review, blocco in EU per DSA, ritardi di 14+ giorni per Google | Classificazione obbligatori/condizionati/best practice con `[V]` (§23.8) | M21, M22 |
+| 9 | CI iOS da Windows | **DA VERIFICARE** (piano definito) | iOS non compilabile/firmabile, costi macOS imprevisti, nessun debug WKWebView | Piano GitHub Actions macOS + fastlane, "finestre Mac" (§23.9) | M14–M20 |
+| 10 | Retrocompatibilità | **DA CORREGGERE** (corretto) | App installate rotte da una migrazione; impossibile forzare l'aggiornamento della prima release; cambio di dominio backend che rompe tutte le app | Contratto API, lint migrazioni, `app-config.json` dalla prima release, finestra di supporto (§23.10) | M2, M9, M14, M18, M20 |
+
+### 23.1 Compatibilità dello stack (punto 1)
+
+**Verificato (registro npm, 2026-10-08)**: Vite 8.3 + `@vitejs/plugin-vue` 6.0 + Vue 3.5.43 + Pinia 4 + Vue Router 5.4 + Tailwind 4.3 + Vitest 5 + ESLint 10 + Capacitor 8.5 convivono con **Node 24**; tutti i plugin Capacitor necessari hanno una release 8.x. Matrice completa in §14.
+
+**Problemi trovati e corretti**
+1. **TypeScript**: `latest` su npm è **7.0.2**, ma `typescript-eslint` 8.71 dichiara `typescript <6.1.0`. → pin a **6.0.x**; aggiornare a TS 7 solo quando lint e `vue-tsc` lo supportano ufficialmente.
+2. **vee-validate**: `@vee-validate/zod` richiede zod ^3.24; il progetto usa zod 4. → **`@tanstack/vue-form` + zod 4 (Standard Schema)**; da confermare con uno spike di mezza giornata all'inizio di M3 **[V]**; fallback: piccolo composable proprio.
+3. **Baseline browser**: Vite 8 imposta `build.target = baseline-widely-available` (Chrome 111, Safari 16.4, iOS 16.4) e Tailwind 4 richiede Chrome 111/Safari 16.4. I minimi di Capacitor (iOS 15, WebView 60 di default) sono più bassi → rischio di **app che si apre ma con layout rotto**. → **iOS 16.4** e **`minWebViewVersion` 111**. Poiché Capacitor su Android si limita a loggare l'errore sotto la soglia, il controllo di avvio mostra "Aggiorna Android System WebView" (UA `Chrome/<n>` < 111) o la pagina di `server.errorPath`.
+4. Controllo automatico in CI: fallisce se `typescript` supera la 6.0.x senza `typescript-eslint` compatibile e se manca `build.target` esplicito.
+
+### 23.2 Push FCM / APNs (punto 2)
+
+- **Token per dispositivo**: una riga `push_devices` per installazione (`installation_id` generato dall'app). iOS: capability Push Notifications, **chiave APNs `.p8`** (Key ID + Team ID) caricata in Firebase, `GoogleService-Info.plist`; Android: `google-services.json`. File Firebase **separati per ambiente** (progetti staging e produzione) — non sono secret ma sono specifici dell'ambiente e vanno selezionati per flavor/scheme **[V]**. Il plugin `@capacitor-firebase/messaging` restituisce il **token FCM** su entrambe le piattaforme (con il plugin ufficiale su iOS si otterrebbe il token APNs, non valido per FCM).
+- **Permessi**: stato `granted/denied/prompt` letto a ogni avvio e al *resume*; richiesta contestuale (§22.5). Android 13+: permesso runtime `POST_NOTIFICATIONS`. Se negato o revocato dalle impostazioni di sistema → `push_devices.enabled = false` alla prima occasione online; se concesso di nuovo → `true`.
+- **Refresh**: evento di rinnovo token del plugin → `register_push_device`; a ogni avvio a freddo si rilegge il token e si aggiorna `last_seen_at` (al massimo una volta al giorno).
+- **Revoca**: al logout si chiama `unregister_push_device(installation_id)` **prima** di `signOut` (timeout 3 s) e poi `deleteToken()` locale. Se si è offline, la rimozione resta in coda locale e viene ritentata al prossimo avvio online; rischio residuo accettato e documentato: fino ad allora le push dell'utente precedente possono comparire sul dispositivo (contenuto minimo: titolo e data). `register_push_device` riassegna sempre il token al nuovo utente.
+- **Gestione errori FCM (server)**
+| Risposta FCM | Azione |
+|---|---|
+| `UNREGISTERED` (404) | Dispositivo `invalid_token`, disabilitato; nessun retry |
+| `INVALID_ARGUMENT` (400) imputabile al token | Come sopra; se imputabile al payload → `failed` permanente + allarme (bug) |
+| `SENDER_ID_MISMATCH` (403) | Token di un altro progetto Firebase → `invalid_token` |
+| `THIRD_PARTY_AUTH_ERROR` (401, chiave APNs/web push) | Errore **sistemico**: canale push in pausa, allarme; le righe tornano `pending` |
+| `QUOTA_EXCEEDED` (429) | Retry con backoff esponenziale, ritardo iniziale ≥ 1 minuto **[V]** |
+| `UNAVAILABLE` (503) / `INTERNAL` (500) | Retry con backoff, rispettando `Retry-After` se presente |
+| Token OAuth del service account scaduto/rifiutato | Rinnovo e un solo nuovo tentativo, poi errore sistemico |
+Backoff come §11 (5 min, 30 min, 2 h, 6 h; max 5 tentativi), applicato **per dispositivo** in `notification_deliveries`.
+- **Consegna**: messaggi *notification* (non data-only, nessun background task); `time_to_live`/`apns-expiration` = 12 h (un promemoria vecchio perde valore) **[R]**; priorità alta (`apns-priority: 10`, `apns-push-type: alert`); `apns-collapse-id` e `tag` Android = `notification.id`.
+- **Android**: canale di notifica `reminders` (importanza alta) creato al primo avvio, `android.notification.channel_id` esplicito, icona `ic_stat_notify` monocromatica.
+- **App in primo piano**: la push non mostra il banner di sistema; l'app mostra un toast interno con azione "Apri".
+- **Token vecchi**: purge a **270 giorni** senza `last_seen_at` (scadenza Android secondo FCM) **[V]**; su iOS la durata dipende da APNs.
+- **Test**: solo su **dispositivi reali** (iPhone con build TestFlight, Android); contract test Deno con `PUSH_DRIVER=mock`; checklist manuale a ogni release candidate.
+- **Secret**: service account JSON solo come secret delle Edge Function; token OAuth in memoria per invocazione.
+
+### 23.3 Supabase Auth e Keychain/Keystore (punto 3)
+
+- **Cosa viene salvato** (sessione di supabase-js, un solo valore JSON): `access_token` (JWT, ~1 h), `refresh_token` (opaco, ruotato a ogni rinnovo), `expires_at`, `user` (id, email, metadata). **Non** viene mai salvato: password, OTP, service role key, URL firmati, chiavi FCM.
+- **Dove**: Web → `localStorage` (default di supabase-js, mitigato da CSP). App → `SecureStorage` (Keychain iOS con accessibilità *after first unlock, this device only*, così non finisce in iCloud né nei backup; Keystore Android) **[V]** sul plugin scelto (`@aparajita/capacitor-secure-storage` o equivalente, prova su dispositivo in M16). Il client è creato con `storage` iniettato e `detectSessionInUrl: false`.
+- **Refresh**: `autoRefreshToken: true`; sulle app, `stopAutoRefresh()` quando l'app va in background e `startAutoRefresh()` + `getSession()` al *resume* **[V]**. Un errore di **rete** durante il refresh **non** è un logout (l'app resta autenticata offline); solo un refresh token invalido/revocato porta al logout con pulizia.
+- **Configurazione server**: rotazione dei refresh token attiva (default), JWT 3600 s; timeout di sessione/inattività dipendono dal piano **[V]**.
+- **Logout**: `signOut()` di default usa scope **globale** (revoca *tutte* le sessioni dell'utente). → il logout dell'app usa **`signOut({ scope: 'local' })`**; "Esci da tutti i dispositivi" (Impostazioni) usa `global`; dopo il cambio/reset password si usa `scope: 'others'`. A ogni logout: rimozione token push, wipe della cache offline (§23.6), reset degli store, annullamento delle richieste in corso.
+- **Reinstallazione**: su iOS gli elementi Keychain **possono sopravvivere alla disinstallazione** (comportamento non garantito da Apple) → al **primo avvio** dopo l'installazione (marker in `Preferences`, che l'OS cancella con l'app) si **elimina sempre** la sessione dal Keychain e la chiave della cache, poi si imposta il marker. Su Android le chiavi Keystore vengono rimosse con l'app; se i dati cifrati sono illeggibili si tratta come "nessuna sessione"; `allowBackup=false` e regole di esclusione dal trasferimento dispositivo. **Esito deterministico**: dopo reinstallazione l'utente è sempre disconnesso. I refresh token della vecchia installazione restano validi lato server fino a scadenza/revoca (gestibile con "Esci da tutti i dispositivi").
+- **Test**: unit del wrapper storage (set/get/remove, errore di decifratura), prova su dispositivo di reinstallazione iOS/Android, logout locale non influente sul Web, refresh in background/resume.
+
+### 23.4 OTP a 6 cifre + link (punto 4)
+
+- **Configurazione**: codice a 6 cifre; **scadenza 600 s** (default Supabase 3600, massimo 86400) **[R]**; invio massimo 1 ogni 60 s per utente (default) e limiti orari/IP configurati con SMTP personalizzato **[V]**; Turnstile prima della beta.
+- **Link**: il template Auth usa `https://app.<dominio>/auth/confirm?token_hash={{ .TokenHash }}&type=<signup|recovery>` e **non** `{{ .ConfirmationURL }}`. La pagina mostra un pulsante "Conferma" e chiama `verifyOtp({ token_hash, type })` **solo al click** (gli scanner antivirus/Safe Links caricano i link e consumerebbero un token a uso singolo; un GET non consuma nulla). `type` ammesso solo tra i valori attesi **[V]** (verificare in M3 se per la conferma registrazione serve `signup` o `email`).
+- **Uso per piattaforma**: Web → codice o link nello stesso browser. iOS/Android → il **codice** è il flusso primario (digitato nell'app); il link, se l'app è installata, apre `/auth/confirm` nell'app tramite Universal/App Link (§23.7), altrimenti nel browser.
+- **Duplicazione**: codice e link derivano dallo stesso token monouso; il primo che viene usato lo consuma, l'altro risponde "scaduto". Gestione UX: se esiste già una sessione valida → procedi; altrimenti "Codice già usato o scaduto → Invia di nuovo". Se la conferma avviene su un altro dispositivo, la schermata `/verify-email` offre "Ho già confermato → Accedi".
+- **Sicurezza**: spazio di 10⁶ codici; con ~30 verifiche ogni 5 minuti per IP **[V]** e scadenza di 10 minuti un attaccante ottiene ≲ 60 tentativi per IP per token (probabilità ≈ 6·10⁻⁵ per IP) → rischio basso, mitigato da Turnstile e scadenza breve; monitoraggio dei tentativi falliti e, se necessario, passaggio a 8 cifre (configurabile). Nessun token nei log; messaggi neutri contro l'enumerazione di account.
+- **Recovery**: `verifyOtp` (recovery) → sessione → `updateUser({ password })` → `signOut({ scope: 'others' })`.
+- **Email**: template in italiano (codice ben visibile, pulsante, scadenza 10 min, "se non sei stato tu ignora l'email"), HTML + testo, **senza tracciamento dei click**; invio via SMTP personalizzato.
+- **Test**: E2E codice e link; link prefetchato (richiesta GET senza click) che non consuma il token; codice errato/scaduto/riusato; doppio flusso su due dispositivi; rate limit.
+
+### 23.5 Cancellazione account (punto 5)
+
+**Inventario dei dati e rimozione**
+| Dove | Cosa | Come viene rimosso | Verifica |
+|---|---|---|---|
+| `auth.users` (+ identità, sessioni, refresh token) | Account | `auth.admin.deleteUser(id, false)` (hard delete) | Utente assente |
+| `public.*` con `owner_id` (profili, scadenze, regole, completamenti, avvisi, consegne, dispositivi push, documenti) | Dati applicativi | Cascata FK da `auth.users` | **Test meta pgTAP**: ogni tabella con `owner_id` ha FK `on delete cascade` verso `auth.users`; conteggio zero dopo la cancellazione |
+| Storage `documents/{uid}/…` | File | **Prima** di `deleteUser`: rimozione del prefisso via Storage API (`service_role`, paginata finché vuoto). Supabase **blocca** la cancellazione di un utente che possiede oggetti in Storage (documentazione ufficiale) | Listing del prefisso vuoto |
+| `storage_cleanup_queue`, `rate_limits` | Percorsi/chiavi con l'ID utente | Cancellazione esplicita nel passo finale | Nessuna riga |
+| Token FCM | Registrazione dispositivo | Righe `push_devices` eliminate; `deleteToken()` lato app prima della richiesta | – |
+| Provider email (Resend) | Log con destinatario | Retention minima/cancellazione via API **[V]** da verificare in M9/M11; dichiarato in privacy policy | Documentato |
+| Sentry / log Supabase | Solo ID, nessuna email (scrubbing) | Retention del servizio (≤ 90 giorni) | Documentato |
+| Backup Supabase | Copie complete | Scadono con la retention (da dichiarare, es. ~30 giorni **[V]**) | Policy + registro sotto |
+| Dispositivo | Sessione e cache | Wipe locale al primo 401/logout | Test su dispositivo |
+
+**Processo ripristinabile** (tabella `account_deletions(user_id uuid pk, requested_at, completed_at, status, last_error)`, solo `service_role`, **senza FK** e senza email)
+1. Riautenticazione (password) + digitazione "ELIMINA"; offerta di export prima della cancellazione.
+2. Riga `requested`; **blocco immediato** dell'utente (`ban`) e `signOut` globale.
+3. Rimozione righe `push_devices`.
+4. Rimozione del prefisso Storage.
+5. `deleteUser` (cascata).
+6. Verifica: nessuna riga residua in nessuna tabella, nessun oggetto Storage.
+7. `completed`; pulizia di `rate_limits` e coda; email di conferma all'indirizzo letto al passo 1 (mantenuto solo in memoria).
+8. Un cron ogni 15 minuti riprende le richieste `requested` rimaste a metà (la funzione è **idempotente**: ogni passo può essere ripetuto).
+**Registro anti-ripristino**: `account_deletions` (solo UUID e date, nessun dato personale) è conservato per la durata dei backup; dopo un ripristino da backup lo script di restore **riapplica** le cancellazioni elencate.
+- **Store**: Apple richiede cancellazione in-app (coperta); Google richiede anche un **URL web** → pagina pubblica `/account-deletion` (spiega i passi, link al login/Impostazioni, contatto privacy per chi non riesce ad accedere) **[V]**.
+- **Test**: E2E (cancellazione completa, login impossibile dopo), pgTAP (meta test FK), Deno (interruzione dopo ogni passo e ripresa, nessun duplicato di email).
+
+### 23.6 Offline in sola lettura (punto 6)
+
+| Aspetto | Decisione |
+|---|---|
+| Dove | **Solo app native**. Il Web non persiste dati (solo memoria); PWA offline è P1 |
+| Cosa viene salvato | Snapshot per utente: categorie di sistema; dal profilo solo `timezone`; scadenze (`id, title, due_date, amount_cents, category_id, status, completed_at, reminder_days, updated_at`); riepilogo ricorrenza (`unit, count`); **numero** di documenti per scadenza |
+| Cosa NON viene salvato | Note, nome e contenuto dei documenti, URL firmati, avvisi, email, token, cronologia di ricerca |
+| Formato e cifratura | JSON cifrato con **AES-GCM (WebCrypto)**; chiave a 256 bit generata al primo snapshot e conservata in `SecureStorage` (`cache.key.<userId>`); busta `{schemaVersion, userIdHash, fetchedAt, iv, ciphertext}` |
+| Dove sta | `@capacitor/preferences`, chiave `cache.v1.<sha256(userId)>`; dimensione massima 1 MB (oltre: si tiene l'insieme più vicino a oggi, max 200 voci). Si sceglie Preferences invece di IndexedDB perché la WebView può svuotare IndexedDB **[V]**; perdere la cache è comunque innocuo |
+| TTL | **Morbido 7 giorni**: banner "Dati di N giorni fa, potrebbero non essere aggiornati". **Duro 30 giorni**: la cache viene scartata. Offline si mostra sempre "Aggiornato il …" |
+| Aggiornamento | Lo snapshot viene **sostituito per intero e in modo atomico** dopo ogni caricamento online riuscito della lista e dopo ogni scrittura riuscita (si invalida e si ricarica) |
+| Invalidazione | Scadenza TTL duro; `schemaVersion` diverso (scartata, non migrata); `userIdHash` diverso (cambio utente: la cache precedente viene eliminata, non conservata); logout; cancellazione account; refresh token revocato/invalido; richiesta manuale "Svuota dati offline" nelle Impostazioni |
+| Dopo il logout | Si elimina la chiave (**crypto-shredding**) e il blob, si azzerano gli store; nessun dato resta leggibile |
+| Avvio a freddo senza rete | La sessione viene letta da `SecureStorage`; gli errori di rete **non** causano logout; si mostra la cache in sola lettura. Dashboard e stati sono ricalcolati **in locale** con data e fuso correnti (funzioni di `domain/`) |
+| Scritture | Disabilitate offline con messaggio chiaro e pulsante "Riprova"; **nessuna coda di scrittura** in v1 |
+| Dettaglio offline | Mostra i campi in cache; per note e documenti "Disponibili solo online" |
+| Tap su una push offline | Apre l'elemento dalla cache se presente, altrimenti la dashboard con banner |
+| Backup | `allowBackup=false` (Android); su iOS la cifratura rende inutile l'eventuale copia |
+| Test | Cifratura/decifratura, TTL ai limiti (6 gg 23 h, 7 gg, 30 gg), cambio utente, `schemaVersion`, wipe al logout, dimensione massima, prova in modalità aereo su dispositivo |
+
+### 23.7 Universal Links e Android App Links (punto 7)
+
+- **Domini**: produzione `app.<dominio>`, staging `staging.<dominio>`; **ciascun host serve i propri file** `/.well-known/…`. Il sito/landing sull'apex non è coperto, così non si "rubano" le pagine pubbliche.
+- **iOS**: `/.well-known/apple-app-site-association` **senza estensione**, `Content-Type: application/json`, risposta `200` diretta (nessun redirect, nessuna autenticazione), pubblico, ≤ 128 KB **[V]**; `appIDs`/`components` = `<TEAMID>.<bundleId>` con percorsi `/items/*` e `/auth/confirm`. Staging elenca solo il bundle staging. Apple consegna il file tramite il proprio CDN: le modifiche non sono immediate (per lo sviluppo `?mode=developer` **[V]**). Capability Associated Domains `applinks:<host>`.
+- **Android**: `/.well-known/assetlinks.json` con `delegate_permission/common.handle_all_urls`, `package_name` e **SHA-256 del certificato di firma di Play App Signing** (da Play Console) **più** quello della upload key e, solo per staging/dev, quello di debug. Intent-filter con `android:autoVerify="true"`, schema `https`, host dell'ambiente, `pathPrefix` `/items` e `/auth/confirm`. Verifica con `adb shell pm get-app-links <package>` e Statement List Tester **[V]**.
+- **Hosting**: regola esplicita che serve `/.well-known/*` come **file statici prima del fallback SPA** (un `index.html` restituito con 200 al posto del file è il guasto più comune), header corretti, nessun redirect `www`/apex su quei percorsi, nessun WAF o `robots.txt` che blocchi i crawler di Apple/Google. Job CI/monitor `well-known-check` che fa `curl -I` su staging.
+- **Link nelle email**: URL HTTPS diretti `app.<dominio>/items/:id` e `/auth/confirm…`; **tracciamento di click/aperture disabilitato** sulle email transazionali (un redirect di tracking rompe i Universal Links) **[V]**.
+- **Whitelist** (gestore `platform/native/deepLinks.ts`, ascolta `appUrlOpen` e l'URL di avvio a freddo): host uguale a quello dell'ambiente; percorsi ammessi: `^/items/<uuid>$`, `/items`, `/dashboard`, `/settings`, `/auth/confirm` (solo con `token_hash` e `type` ammessi); query ignorata altrove. Percorso sconosciuto → **apre `/dashboard`** e registra il caso (non ignora in silenzio). Non autenticato → `/login?redirect=<path>`.
+- **Limiti noti** **[V]**: iOS non apre l'app se il link è nella stessa pagina dello stesso dominio o digitato nella barra di Safari; alcuni client di posta aprono i link in un browser interno. **Fallback**: sulla pagina web `/items/:id` un pulsante "Apri nell'app" usa lo schema personalizzato (`lifeadmin://` prod, `lifeadmin-staging://` staging) sottoposto alla stessa whitelist; mai token negli URL di schema.
+- **App non installata**: il link apre il Web (login → redirect → elemento).
+- **Notifiche push**: il payload contiene solo `path`, validato dalla stessa whitelist.
+- **Matrice di prova**: Mail iOS, Gmail iOS/Android, Outlook, client Samsung, Safari/Chrome; app installata/non installata; avvio a freddo/in memoria; utente disconnesso → login → redirect.
+
+### 23.8 Requisiti App Store / Google Play (punto 8)
+
+Tutte le righe **[V]** vanno riverificate in M21 e a ogni release: le regole cambiano ogni anno. *Verificato (ott. 2026)* = confermato in questa sessione.
+
+**Obbligatori**
+| Requisito | Piattaforma | Note |
+|---|---|---|
+| Account Apple Developer / Play Console attivi, con verifica identità | iOS/Android | Costi e tempi **[V]**; Apple può richiedere D-U-N-S per organizzazioni |
+| Build con Xcode 26 / SDK iOS 26 | iOS | *Verificato ott. 2026*; l'obbligo sale tipicamente ogni primavera **[V]** |
+| Target API 36 per nuove app e aggiornamenti | Android | *Verificato ott. 2026* (estensione possibile fino al 1 novembre 2026) |
+| AAB + Play App Signing | Android | **[V]** |
+| URL privacy policy; privacy labels (Apple) / Data safety (Google) | entrambe | **[V]** |
+| Cancellazione account in-app; Google anche URL web | entrambe | Apple *verificato ott. 2026*; Google **[V]** (§23.5) |
+| Guideline 4.2 (non essere un sito reimpacchettato) | iOS | *Verificato ott. 2026*; presidi in §21.1 |
+| Questionario età con le nuove domande (obbligatorio per invii dal settembre 2026) | iOS | Fonte secondaria **[V]** |
+| **Dichiarazione "trader" DSA** (indirizzo, telefono, email mostrati pubblicamente) per distribuire nell'UE | iOS (e Google **[V]**) | Rilevante: lanciando in Italia con un'attività commerciale va dichiarata; valutare indirizzo/recapiti aziendali invece di personali **[V]** |
+| Account demo e note per il revisore (l'app richiede login) | entrambe | **[V]** |
+| Dichiarazione crittografia (solo HTTPS → esente) | iOS | **[V]** |
+| Privacy manifest (`PrivacyInfo.xcprivacy`) per API "required reason" e SDK (Capacitor, Firebase) | iOS | In pratica obbligatorio per noi **[V]** |
+| Dichiarazioni "App content" (pubblico, annunci, classificazione contenuti) | Android | **[V]** |
+| Gestione edge-to-edge (conseguenza del target API 36) | Android | **[V]** |
+
+**Condizionati**
+| Requisito | Condizione |
+|---|---|
+| Test chiuso con ≥ 12 tester per 14 giorni consecutivi | Solo **account personale** Play (esenti le organizzazioni) — *verificato ott. 2026* |
+| Sign in with Apple | Solo se si aggiunge un login con provider terzi **[V]** |
+| Acquisto in-app (StoreKit / Play Billing) | Solo se si vendono abbonamenti digitali nell'app **[V]** |
+| Capability Push / Associated Domains | Solo se si usano push e deep link (sì) |
+| Stringhe d'uso fotocamera/foto; permesso fotocamera Android | Solo se si usa l'acquisizione diretta |
+| `POST_NOTIFICATIONS` | Android 13+, se si usano push |
+| D-U-N-S | Solo per account organizzazione Apple **[V]** |
+
+**Best practice (non obbligatorie)**: TestFlight esterno prima della review; test interno/chiuso Play con *pre-launch report*; rollout graduale (Android) e rilascio a fasi (iOS); monitoraggio crash (Sentry, Android vitals); schede store localizzate e screenshot per tutte le dimensioni; etichette di accessibilità; audit delle privacy label a ogni nuovo SDK; risposta rapida al feedback di review.
+
+### 23.9 CI iOS da Windows (punto 9)
+
+**Principio**: Windows basta per Web e Android; **iOS si compila, firma e carica su runner macOS in CI**. Un Mac serve solo per debug interattivo.
+
+| Attività | Serve macOS? | Quando | Come |
+|---|---|---|---|
+| Modifica di `ios/` (Info.plist, entitlements, config) come testo | No | M14+ | Editor su Windows, validazione in CI |
+| `cap add ios` / `cap sync ios` | **[V]** probabilmente no (progetto SPM), altrimenti sì | M14 | Prova su Windows; in caso contrario nella prima "finestra Mac" o via workflow manuale |
+| Compilazione per simulatore | Sì (runner) | Da M14, notturna | GitHub Actions macOS, Xcode 26 |
+| Firma (certificati, profili) | **No Mac locale**: serve macOS *in CI* | M20 | Chiave API App Store Connect (`.p8`) + **fastlane `match`** (repo privato cifrato); workflow manuale una tantum `ios-bootstrap-signing` |
+| Upload su TestFlight | Sì (runner) | M20 | `fastlane pilot` su tag `mobile-v*` |
+| Simulatore, Safari Web Inspector sulla WKWebView, Instruments | **Sì, un Mac** | M15, M16, M18, M21 | "Finestre Mac" a ore (Mac cloud) o Mac mini usato |
+| Prova su iPhone reale | No Mac (basta TestFlight) + un iPhone | M15+ | Build da CI installata via TestFlight |
+
+- **Scelta [D]**: **GitHub Actions + fastlane** (un solo sistema di CI). **Alternativa [R]** se la firma risulta onerosa: **Codemagic** (firma gestita dalla chiave API, runner Mac M-series). Xcode Cloud scartato: la configurazione iniziale è meno adatta a un flusso da Windows **[V]**.
+- **Costi**: i minuti macOS costano circa 10× quelli Linux (≈ 0,062 $/min nel gennaio 2026 **[V]**) → job iOS solo notturno, su tag e con filtri di percorso; cache di SPM/DerivedData.
+- **Versione Xcode**: pin esplicito (etichetta runner e `xcode-select`); le immagini mantengono solo alcune versioni di Xcode **[V]**.
+- **Secret** (solo da M20): `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`, `MATCH_PASSWORD`, accesso al repo certificati.
+- **Percorso critico**: l'iscrizione ad Apple Developer richiede giorni/settimane **[V]** e fornisce Team ID (AASA, M16) e chiave APNs (M18) → **avviarla entro M12**. Se bloccata: Web e Android procedono, iOS slitta senza modifiche all'architettura.
+
+### 23.10 Compatibilità retroattiva (punto 10)
+
+**Finestra di supporto [D]**: ogni versione mobile resta supportata per **almeno N-2 release e 90 giorni** dopo la successiva. Con rollout graduale convivono sempre N e N-1. **Ordine obbligato**: *expand* (migrazione additiva) → rilascio app → attesa finestra → *contract*.
+
+**Contratto API versionato** (`docs/API_CONTRACT.md`, creato in M2, aggiornato a ogni milestone): tabelle e colonne lette/scritte dai client, firme RPC, richieste/risposte delle Edge Function, percorsi Storage, payload push (`path`), percorsi dei deep link, schema di `/app-config.json`, **grant per colonna e policy RLS** (anch'essi API).
+
+**Regole**
+1. Query client con **colonne esplicite** (mai `select *`).
+2. RPC: mai cambiare la firma; nuove versioni come `<nome>_v2`; nuovi parametri con default.
+3. Edge Function: risposte solo additive; i client **ignorano campi sconosciuti** (schemi non-strict) e **valori enum sconosciuti** (fallback).
+4. Enum solo additivi. Esempio reale: in M18 si aggiunge `'push'` a `notification_channel`; le versioni precedenti che elencano gli avvisi di una scadenza non devono rompersi → già dal M9 il client mostra un'etichetta generica per i canali non riconosciuti.
+5. Nuove colonne `NOT NULL` solo con default; nessun `DROP`/`RENAME`/cambio di tipo nella fase *expand*.
+6. **CI**: lint delle migrazioni (strumento tipo `squawk` **[V]** o controllo proprio) che fallisce su `DROP COLUMN/TABLE`, `RENAME`, `ALTER COLUMN TYPE`, rimozione di valori enum e restrizioni di grant/policy, salvo etichetta `contract:` approvata; **suite di contratto "client N-1"** con fixture di richieste/risposte registrate per ogni release mobile pubblicata, rieseguite sulle migrazioni correnti (pgTAP + Deno).
+7. **Deep link e push**: il server emette solo percorsi supportati da `minAppVersion` (`/items/:id` è stabile per sempre); percorso sconosciuto lato client → `/dashboard` (§23.7).
+8. **Rollback**: migrazioni solo *forward* (correzione con nuova migrazione); Edge Function ridistribuite da tag precedente; app: stop del rollout Android / pausa del rilascio a fasi iOS **[V]**.
+9. **Header di versione**: tutte le chiamate Supabase inviano `x-app-version` e `x-app-platform` (client factory di M2) → i log API permettono di misurare l'adozione per versione **[V]** e di decidere quando fare *contract*.
+10. **Dominio backend stabile**: le app installate contengono l'URL Supabase; cambiare progetto/URL romperebbe tutte le installazioni. → valutare prima di M13 un **dominio personalizzato per l'API** (`api.<dominio>`, funzione a pagamento **[V]**) e non migrare mai il progetto di produzione senza questa indirezione.
+
+**`/app-config.json`** (servito da `https://<host-ambiente>/app-config.json`, un file per ambiente)
+```json
+{
+  "schema": 1,
+  "minAppVersion":         { "ios": "1.0.0", "android": "1.0.0" },
+  "recommendedAppVersion": { "ios": "1.0.0", "android": "1.0.0" },
+  "blockedVersions":       { "ios": [], "android": [] },
+  "storeUrls":             { "ios": "<url>", "android": "<url>" },
+  "message":               { "it": "" },
+  "maintenance":           { "active": false, "message": "" }
+}
+```
+- **Client** (da M14, presente **nella primissima release**): lettura all'avvio a freddo e al *resume* (al massimo ogni 6 h), `fetch` con `cache: 'no-store'` e timeout 3 s; **fail-open**: errore di rete/parse → si continua con l'ultima copia valida salvata in `Preferences`. Confronto semver. Versione `< minAppVersion` o in `blockedVersions` → schermata bloccante con link allo store; `< recommendedAppVersion` → banner chiudibile (al massimo ogni 7 giorni); `maintenance.active` → solo banner (le letture restano possibili). `schema` sconosciuto → ignorato.
+- **Hosting**: `Cache-Control: no-cache`; **header CORS `Access-Control-Allow-Origin: *`** (file pubblico senza segreti), perché l'origine delle app native è `capacitor://localhost` / `https://localhost`.
+- **Governance**: `minAppVersion` non supera mai l'ultima versione pubblicata **al 100%**; si alza solo dopo adozione ≥ 90% **[R]** della versione corrente e dopo la finestra di supporto; ogni modifica passa da PR e da un test di validazione dello schema in CI.
+
+### 23.11 Esito dell'Architecture Gate
+
+**Architecture Gate: PASS** — *dopo l'applicazione delle correzioni di questa versione 0.3.*
+
+Prima delle correzioni l'esito sarebbe stato **BLOCKED** per tre motivi, tutti riguardanti M1–M3, e per due lacune che avrebbero imposto rifacimenti:
+1. TypeScript 7 (`latest`) incompatibile con `typescript-eslint` → pin a 6.0.x.
+2. `vee-validate` incompatibile con zod 4 → `@tanstack/vue-form`.
+3. Minimi nativi (iOS 15, WebView 60) incompatibili con Vite 8/Tailwind 4 → iOS 16.4, WebView 111.
+4. `app-config.json` previsto troppo tardi: una prima release senza il controllo non può più essere forzata ad aggiornarsi → spostato a M14.
+5. Cancellazione account non ripristinabile e senza registro anti-ripristino → processo e tabella `account_deletions` (M11).
+
+**Nessun blocco residuo prima di M1.** Restano elementi **DA VERIFICARE** programmati, non bloccanti per M1:
+| Elemento | Quando | Come |
+|---|---|---|
+| Standard Schema di TanStack Form con zod 4 | Inizio M3 | Spike di mezza giornata (fallback: composable proprio) |
+| `type` di `verifyOtp` per la conferma registrazione, limiti di rate/SMTP | M3 | Lettura docs correnti e prova locale |
+| Plugin secure storage su Keychain/Keystore reali | M16 | Prova su dispositivi |
+| AASA/assetlinks, apertura dei link da client di posta | M16 | Matrice di prova §23.7 |
+| Push iOS/Android reali, canale Android, TTL | M18 | Dispositivi reali |
+| `cap add ios` da Windows | M14 | Prova; altrimenti finestra Mac |
+| Requisiti store contrassegnati **[V]** (DSA trader, età, privacy manifest, costi) | M21 | Riverifica sulle fonti ufficiali |
+| Dominio API personalizzato | Prima di M13 | Valutazione costi/benefici |
+| Iscrizione Apple Developer | Entro M12 | Azione esterna da concordare |
+
+Fonti consultate: [Vite – build options](https://vite.dev/config/build-options), [Tailwind – compatibilità browser](https://tailwindcss.com/docs/compatibility), [Capacitor – configurazione](https://capacitorjs.com/docs/config), [Capacitor 8 – aggiornamento](https://capacitorjs.com/docs/updating/8-0), [Supabase – rate limit Auth](https://supabase.com/docs/guides/auth/rate-limits), [Supabase – template email](https://www.supabase.com/docs/guides/auth/auth-email-templates), [Supabase – gestione utenti](https://supabase.com/docs/guides/auth/auth-user-management), [Firebase – codici di errore FCM](https://firebase.google.com/docs/cloud-messaging/error-codes), [Firebase – gestione token](https://firebase.google.com/docs/cloud-messaging/manage-tokens), [Apple – DSA trader](https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-eu-digital-services-act-compliance-information), [Google Play – test chiuso](https://support.google.com/googleplay/android-developer/answer/14151465?hl=en-GB), [Android – target API](https://developer.android.com/google/play/requirements/target-sdk), [Apple – requisiti SDK](https://www.developer.apple.com/news/upcoming-requirements/).
