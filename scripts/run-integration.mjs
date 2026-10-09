@@ -1,6 +1,6 @@
 // Esegue i test di integrazione contro Supabase locale.
 // URL e chiavi (locali, effimere) arrivano da `supabase status -o env` oppure, se già presenti,
-// dalle variabili SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY (es. in CI).
+// dalle variabili SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY / MAILPIT_URL (es. in CI).
 // Non vengono mai scritte su disco. La service_role è usata SOLO dai test per creare utenti.
 import { spawnSync } from 'node:child_process'
 
@@ -27,16 +27,26 @@ function readStatusEnv() {
 }
 
 const env = { ...process.env }
-if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY || !env.SUPABASE_SERVICE_ROLE_KEY) {
+if (
+  !env.SUPABASE_URL ||
+  !env.SUPABASE_ANON_KEY ||
+  !env.SUPABASE_SERVICE_ROLE_KEY ||
+  !env.MAILPIT_URL
+) {
   const status = readStatusEnv()
-  env.SUPABASE_URL = status.API_URL
-  env.SUPABASE_ANON_KEY = status.ANON_KEY
-  env.SUPABASE_SERVICE_ROLE_KEY = status.SERVICE_ROLE_KEY
+  env.SUPABASE_URL ??= status.API_URL
+  env.SUPABASE_ANON_KEY ??= status.ANON_KEY
+  env.SUPABASE_SERVICE_ROLE_KEY ??= status.SERVICE_ROLE_KEY
+  // Mailpit (email di prova) parte con `pnpm supabase:start`; la CLI lo espone come MAILPIT_URL o INBUCKET_URL.
+  env.MAILPIT_URL ??= status.MAILPIT_URL ?? status.INBUCKET_URL
 }
 
-const missing = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY'].filter(
-  (name) => !env[name],
-)
+const missing = [
+  'SUPABASE_URL',
+  'SUPABASE_ANON_KEY',
+  'SUPABASE_SERVICE_ROLE_KEY',
+  'MAILPIT_URL',
+].filter((name) => !env[name])
 if (missing.length > 0) {
   console.error(`Variabili mancanti: ${missing.join(', ')}`)
   process.exit(1)

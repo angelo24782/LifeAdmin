@@ -23,6 +23,7 @@ function requireEnv(name: 'SUPABASE_URL' | 'SUPABASE_ANON_KEY' | 'SUPABASE_SERVI
 }
 
 export const supabaseUrl = (): string => requireEnv('SUPABASE_URL')
+export const anonKey = (): string => requireEnv('SUPABASE_ANON_KEY')
 
 /** Client amministrativo (service_role): bypassa la RLS. Solo per setup/verifica nei test. */
 export function createAdminClient(): SupabaseClient<Database> {

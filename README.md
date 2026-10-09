@@ -75,7 +75,7 @@ pnpm typecheck    # vue-tsc su app e tooling
 Richiede Docker. Tutto gira in locale: nessun progetto cloud.
 
 ```bash
-pnpm supabase:start   # avvia Postgres, Auth e PostgREST (la prima volta scarica le immagini Docker)
+pnpm supabase:start   # avvia Postgres, Auth, PostgREST e Mailpit (la prima volta scarica le immagini Docker)
 pnpm db:reset         # ricrea il database applicando le migration in supabase/migrations
 pnpm db:lint          # lint dello schema
 pnpm db:test          # test pgTAP in supabase/tests/database (schema, vincoli, RLS)
@@ -92,14 +92,15 @@ pnpm supabase:stop    # ferma lo stack
 
 ## Autenticazione (pianificata)
 
-L'autenticazione (M3) è **pianificata ma non ancora implementata**: verifica email con codice a 8 cifre o link, scelta della password dopo la conferma, recupero password. In sviluppo le email saranno lette da Mailpit. Dettagli in [`docs/SPECIFICA.md`](docs/SPECIFICA.md) (§20 e §23.12). La migration prevista aggiunge due trigger su `auth.users` e la colonna `profiles.password_setup_pending`: è verificata **solo in locale**. Prima della beta sono obbligatorie le verifiche in un ambiente Supabase in hosting (entrambi i trigger, persistenza del flag, comportamento fail-closed, rate limiting, lunghezza OTP, CAPTCHA); la beta resta bloccata finché non sono fatte.
+L'autenticazione (M3) è **implementata solo lato database** (migration `auth_prehijack_guard`, con test pgTAP, di integrazione e a mutazione, verificati in locale); client e interfaccia **non sono ancora implementati**: verifica email con codice a 8 cifre o link, scelta della password dopo la conferma, recupero password. In sviluppo le email saranno lette da Mailpit. Dettagli in [`docs/SPECIFICA.md`](docs/SPECIFICA.md) (§20 e §23.12). La migration prevista aggiunge due trigger su `auth.users` e la colonna `profiles.password_setup_pending`: è verificata **solo in locale**. Prima della beta sono obbligatorie le verifiche in un ambiente Supabase in hosting (entrambi i trigger, persistenza del flag, comportamento fail-closed, rate limiting, lunghezza OTP, CAPTCHA); la beta resta bloccata finché non sono fatte.
 
 ## Test
 
 ```bash
 pnpm test:unit         # Vitest (unit)
 pnpm test:coverage     # Vitest con coverage
-pnpm test:integration  # isolamento A/B via PostgREST reale (richiede `pnpm supabase:start`)
+pnpm test:integration  # isolamento A/B e protezione anti pre-hijacking con Supabase Auth reale e Mailpit (richiede `pnpm supabase:start`)
+pnpm test:auth-guard-mutations  # rompe di proposito ogni protezione di auth_prehijack_guard e verifica che i test falliscano (richiede `pnpm supabase:start`)
 pnpm db:test           # pgTAP (richiede `pnpm supabase:start`)
 pnpm test:e2e          # Playwright (build + preview + browser)
 ```

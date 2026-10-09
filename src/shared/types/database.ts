@@ -61,14 +61,14 @@ isOneToOne: false
                   ]
                 },"profiles": {
                   Row: {
-                    "created_at": string,"display_name": string | null,"email_notifications_enabled": boolean,"id": string,"locale": string,"notification_hour": number,"onboarding_completed_at": string | null,"privacy_accepted_at": string,"privacy_version": string,"timezone": string,"updated_at": string
+                    "created_at": string,"display_name": string | null,"email_notifications_enabled": boolean,"id": string,"locale": string,"notification_hour": number,"onboarding_completed_at": string | null,"password_setup_pending": boolean,"privacy_accepted_at": string,"privacy_version": string,"timezone": string,"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "created_at"?: string,"display_name"?: string | null,"email_notifications_enabled"?: boolean,"id": string,"locale"?: string,"notification_hour"?: number,"onboarding_completed_at"?: string | null,"privacy_accepted_at": string,"privacy_version": string,"timezone"?: string,"updated_at"?: string
+                    "created_at"?: string,"display_name"?: string | null,"email_notifications_enabled"?: boolean,"id": string,"locale"?: string,"notification_hour"?: number,"onboarding_completed_at"?: string | null,"password_setup_pending"?: boolean,"privacy_accepted_at": string,"privacy_version": string,"timezone"?: string,"updated_at"?: string
                   }
                   Update: {
-                    "created_at"?: string,"display_name"?: string | null,"email_notifications_enabled"?: boolean,"id"?: string,"locale"?: string,"notification_hour"?: number,"onboarding_completed_at"?: string | null,"privacy_accepted_at"?: string,"privacy_version"?: string,"timezone"?: string,"updated_at"?: string
+                    "created_at"?: string,"display_name"?: string | null,"email_notifications_enabled"?: boolean,"id"?: string,"locale"?: string,"notification_hour"?: number,"onboarding_completed_at"?: string | null,"password_setup_pending"?: boolean,"privacy_accepted_at"?: string,"privacy_version"?: string,"timezone"?: string,"updated_at"?: string
                   }
                   Relationships: [
                     

@@ -31,7 +31,7 @@ Regole per chi scrive codice client:
 | `recurrence_rules` | proprie           | `item_id, interval_unit, interval_count, anchor_date`                  | `interval_unit, interval_count, anchor_date`                                                      | proprie |
 | `item_completions` | proprie           | —                                                                      | —                                                                                                 | —       |
 
-- **Pianificata in M3 (non ancora presente nello schema)**: `profiles.password_setup_pending boolean not null default false`, **in sola lettura** per `authenticated` (la lettura deriva dal grant `SELECT` sull'intera tabella già concesso da M2; nessun `INSERT`/`UPDATE` sulla colonna per i client; `anon` nessun accesso). Indica che l'utente ha confermato l'email ma non ha ancora scelto la password.
+- **Presente dalla migration `auth_prehijack_guard` (M3)**: `profiles.password_setup_pending boolean not null default false`, **in sola lettura** per `authenticated` (la lettura deriva dal grant `SELECT` sull'intera tabella già concesso da M2; nessun `INSERT`/`UPDATE` sulla colonna per i client; `anon` nessun accesso). Indica che l'utente ha confermato l'email ma non ha ancora scelto la password.
 - `owner_id` non è mai inseribile né aggiornabile dal client: lo valorizza `default auth.uid()`.
 - `recurrence_rules` e `item_completions` usano la FK composta `(item_id, owner_id) →
 life_items(id, owner_id)`: il database garantisce che il figlio appartenga allo stesso utente.
@@ -56,9 +56,9 @@ nei metadata di `signUp`:
 - Le versioni supportate sono in `private.supported_privacy_versions()`; per aggiungerne una si
   ridefinisce la funzione con una nuova migration.
 
-## Autenticazione (M3 — pianificata, NON ancora implementata)
+## Autenticazione (M3 — lato database implementato e verificato in locale; client e UI NON ancora implementati)
 
-Questa sezione descrive il comportamento previsto dalla specifica v0.5 (§23.12); non è ancora disponibile nel codice.
+La parte database (trigger su `auth.users`, colonna `profiles.password_setup_pending`, privilegi) è nella migration `auth_prehijack_guard` ed è testata in locale con GoTrue reale. Il flusso lato app (registrazione, `/set-password`, guard, store) è descritto dalla specifica v0.5 (§23.12) e **non è ancora implementato**.
 
 - Codice di verifica email: **8 cifre**, validità **600 s**; in alternativa link con `token_hash` (PKCE).
 - Registrazione: `signUp` con password casuale monouso (mai mostrata) e `privacy_version` nei metadata. Un trigger `BEFORE UPDATE` su `auth.users` annulla la password alla prima conferma dell'email; la password si sceglie dopo la conferma con `updateUser({ password })`.
