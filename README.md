@@ -90,6 +90,10 @@ pnpm supabase:stop    # ferma lo stack
 - Le chiavi locali non sono segreti e non vanno scritte nel repository: i test di integrazione le
   leggono da `supabase status`.
 
+## Autenticazione (pianificata)
+
+L'autenticazione (M3) è **pianificata ma non ancora implementata**: verifica email con codice a 8 cifre o link, scelta della password dopo la conferma, recupero password. In sviluppo le email saranno lette da Mailpit. Dettagli in [`docs/SPECIFICA.md`](docs/SPECIFICA.md) (§20 e §23.12). La migration prevista aggiunge due trigger su `auth.users` e la colonna `profiles.password_setup_pending`: è verificata **solo in locale**. Prima della beta sono obbligatorie le verifiche in un ambiente Supabase in hosting (entrambi i trigger, persistenza del flag, comportamento fail-closed, rate limiting, lunghezza OTP, CAPTCHA); la beta resta bloccata finché non sono fatte.
+
 ## Test
 
 ```bash

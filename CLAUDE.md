@@ -6,7 +6,7 @@ Risposte e commenti in **italiano**.
 
 ## Fonte di verità
 
-- **`docs/SPECIFICA.md` (v0.4)**: prodotto, architettura, database, sicurezza, UX, roadmap M1–M22.
+- **`docs/SPECIFICA.md` (v0.5)**: prodotto, architettura, database, sicurezza, UX, roadmap M1–M22.
   Se il codice diverge dalla specifica, si aggiorna prima la specifica.
 - `docs/API_CONTRACT.md`: cosa i client possono usare del backend (colonne, privilegi, errori).
 - `README.md`: installazione, comandi, test.
@@ -17,7 +17,7 @@ Leggi la specifica (almeno le sezioni della milestone in corso, §14, §20, §23
 
 - **M1** (setup progetto, livello `platform/`, CI) — chiusa.
 - **M2** (schema DB, RLS, client Supabase, service layer, test) — chiusa, CI verde.
-- **Prossima: M3 — Autenticazione** (vedi §20 e §23.3/§23.4 della specifica). Non iniziarla senza il via esplicito.
+- **M3 — Autenticazione**: piano **v0.5 della specifica rivisto, in attesa di approvazione esplicita**; implementazione **non iniziata** (vedi §20, §23.3/§23.4, §23.12). Non scrivere codice M3 senza il via esplicito.
 - Fase Web MVP = M1–M13; fase Mobile = M14–M22.
 
 ## Manutenzione di questo file (obbligatoria, in ogni chat)
@@ -53,7 +53,15 @@ Questo file è la memoria del progetto tra una chat e l'altra: **va tenuto sempr
 Node 24 · pnpm 10 · Vue 3.5 · Vite 8 · **TypeScript 6.0.x (NON 7.x: `typescript-eslint` non lo supporta)** ·
 Pinia 4 · Vue Router 5 · Tailwind 4 (token CSS in `src/styles/tailwind.css`) · zod 4 · Vitest 5 · Playwright ·
 ESLint 10 · supabase-js 2.117. Non aggiornare versioni maggiori senza ripassare la matrice.
-Previsti ma **non ancora installati**: `@tanstack/vue-form` (M3, da confermare con uno spike), Capacitor (M14).
+Previsti ma **non ancora installati**: `@axe-core/playwright` (dev, M3), Capacitor (M14). `@tanstack/vue-form` **non adottato** (form con composable `useZodForm`, §14 e §23.12).
+
+## Lezioni apprese (M3, piano)
+
+- Pre-hijacking: GoTrue non sovrascrive la password di un account non confermato. Mitigazione prevista: password casuale monouso alla registrazione + trigger `BEFORE UPDATE` su `auth.users` che annulla la password alla prima conferma + scelta password dopo la conferma (§23.12). Stato del flusso "password da scegliere" in `profiles.password_setup_pending` (colonna additiva, trigger `AFTER UPDATE` senza `UPDATE OF`, `REVOKE EXECUTE … FROM PUBLIC`). **Verificato solo in locale; beta bloccata finché entrambi i trigger, la persistenza del flag, il fail-closed e l'effetto di `REVOKE EXECUTE` non sono verificati su Supabase hosted (staging).** La revoca delle sessioni al cambio password è un comportamento locale di GoTrue, non una garanzia.
+- I messaggi neutri della UI non eliminano l'enumerazione delle email via API; rate limit e CAPTCHA in hosting sono condizioni bloccanti per la beta (§23.12 D).
+- Un metadato scritto da un trigger `BEFORE` sul wipe viene riscritto da GoTrue: lo stato persistente va tenuto in `profiles`. Un trigger `AFTER UPDATE OF col` non scatta se la colonna è cambiata da un trigger `BEFORE`.
+- Il test "profilo mancante" deve far fallire il flusso, non passare come riuscito.
+- Non dichiarare "verificato" ciò che è stato provato solo in locale.
 
 ## Architettura: regole vincolanti
 

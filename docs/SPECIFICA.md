@@ -1,7 +1,9 @@
 # LifeAdmin — Specifica Tecnica e di Prodotto (MVP v1)
 
-Stato: **approvata; allineata a quanto implementato fino a M2** · Versione 0.4 · Data 2026-10-08
+Stato: **M1 e M2 implementate; M3 pianificata (non ancora implementata)** · Versione 0.5 · Data 2026-10-09
 Questo documento è il riferimento per tutto lo sviluppo. Se il codice diverge, si aggiorna prima la specifica.
+
+**Changelog v0.5 (piano M3 — Autenticazione)**: recepisce le decisioni di M3 **approvate prima dell'implementazione**; nessun codice è ancora stato scritto. Il comportamento descritto è stato verificato **solo in locale con spike** (stack Supabase temporaneo, GoTrue della CLI 2.120): non è implementato né verificato su Supabase in hosting. Decisioni: OTP a **8 cifre** (scadenza 10 minuti); nessuna dipendenza `@tanstack/vue-form` (si usa un composable proprio su zod, §23.12); `@axe-core/playwright` come dev dependency; inizializzazione differita del client tramite opzione additiva (default invariato); conferma email obbligatoria, password ≥ 10, template di conferma e recovery, Mailpit in test e CI; landing `/`; messaggi OTP neutrali; `pendingEmail` solo in memoria; test di scadenza con retrodatazione controllata dei token; nessun test che pretenda un 429 in locale; in caso di inizializzazione bloccata si chiede di ricaricare la pagina (nessun `reload()` in `AppLifecycle`). **Nuovo flusso di registrazione contro il pre-hijacking** degli account non confermati: password casuale monouso alla registrazione, **trigger `BEFORE UPDATE` su `auth.users` che azzera la password alla prima conferma**, scelta della password dopo la conferma (§23.12); **M3 richiede quindi una migration**, che (dopo gli spike finali del 2026-10-09) ha **tre componenti**: trigger `BEFORE UPDATE` di azzeramento password, colonna additiva `profiles.password_setup_pending` (stato server, non solo memoria) e trigger `AFTER UPDATE` che la mantiene, con `REVOKE EXECUTE … FROM PUBLIC` sulle funzioni (l'effetto della revoca sul funzionamento dei trigger è un'ipotesi da verificare con test, non una misura). **Validata solo sullo stack locale; la verifica su Supabase hosted è obbligatoria prima della beta (§23.12).** Nuova §23.12 con la distinzione tra comportamento verificato in locale **[L]**, da verificare in staging **[S]** e condizioni obbligatorie prima della beta **[B]**. Sezioni toccate: 1, 2 (F1, F2), 3, 5 (nuova colonna `profiles.password_setup_pending`), 13, 14, 15, 20 (M3), 21, 23 (23.1, 23.4, 23.11, nuova 23.12). Le sezioni 6 e 12 non sono toccate: policy RLS e grant di `UPDATE` di `profiles` restano quelli di M2.
 
 **Changelog v0.4 (allineamento a M2)**: recepisce le decisioni **effettivamente implementate** in M2, senza introdurre nuove decisioni. Correzioni: validazione di `profiles.timezone` con trigger su `pg_catalog.pg_timezone_names` (non CHECK); nessun `seed.sql` (le 8 categorie di sistema sono nella migration `categories`; nessun utente o credenziale di test nel repository, gli utenti A/B dei test di integrazione sono creati a runtime con `service_role`); `owner_id` con `default auth.uid()`, senza privilegio di INSERT/UPDATE per il client, `WITH CHECK` come seconda barriera, immutabile. Allineamenti: schema `private` per le funzioni interne; `item_completions` in sola lettura dal client; `privacy_version` verificata da una funzione server-side versionata via migration, con rifiuto atomico della registrazione e `privacy_accepted_at = now()` lato database; `life_items` usa solo categorie visibili all'utente; test RLS via PostgREST reale oltre a pgTAP; tabelle `life_items`, `recurrence_rules` e `item_completions` create già in M2 (la logica resta in M5/M6). Sezioni toccate: 2 (F1), 5, 6, 10, 12, 13, 15, 17, 20 (M2, M5, M6), 22.8.
 
@@ -9,7 +11,7 @@ Questo documento è il riferimento per tutto lo sviluppo. Se il codice diverge, 
 
 **Changelog v0.2**: LifeAdmin è un prodotto **Web + iOS + Android** con una sola codebase Vue 3 + TypeScript distribuita sulle app native tramite **Capacitor**. Modificate le sezioni 1, 2 (F1/F2), 3, 4, 14, 15, 16, 17, 18, 20, 21; aggiunta la sezione **22 — Mobile & Store Distribution**. Le sezioni 5, 6 e 11 restano valide e vengono estese in 22.5.
 
-Convenzioni: **[D]** decisione presa · **[I]** ipotesi da validare · **[V]** da verificare con fonte ufficiale prima di implementare.
+Convenzioni: **[D]** decisione presa · **[I]** ipotesi da validare · **[V]** da verificare con fonte ufficiale prima di implementare · **[L]** comportamento verificato in locale (spike o test su Supabase locale) · **[S]** da verificare in staging su Supabase in hosting · **[B]** condizione **obbligatoria prima della beta**.
 Terminologia: in UI l'entità si chiama **"Scadenza"**; nel codice e nel DB **`life_item`**.
 
 ---
@@ -51,7 +53,7 @@ Terminologia: in UI l'entità si chiama **"Scadenza"**; nel codice e nel DB **`l
 |---|---|---|---|
 | Account, login, Life Item, ricorrenze, dashboard, template | Identici (codice condiviso) | Identici | Identici |
 | Navigazione | Sidebar (desktop) / tab bar (schermi piccoli) | Tab bar nativa-like, gesti, safe area | Tab bar, tasto Indietro di sistema |
-| Conferma email e reset password | Codice a 6 cifre **o** link | Codice a 6 cifre (+ Universal Link) | Codice a 6 cifre (+ App Link) |
+| Conferma email e reset password | Codice a 8 cifre **o** link | Codice a 8 cifre (+ Universal Link) | Codice a 8 cifre (+ App Link) |
 | Avvisi | Email (MVP); web push in P1 | Email + push | Email + push |
 | Documenti | Selezione file / drag & drop | Fotocamera + selettore file + condivisione | Fotocamera + selettore file |
 | Distribuzione | URL (hosting statico) | App Store (TestFlight in beta) | Google Play (test interni/chiusi in beta) |
@@ -75,8 +77,8 @@ Terminologia: in UI l'entità si chiama **"Scadenza"**; nel codice e nel DB **`l
 
 | # | Passo | Cosa succede | Esito misurabile |
 |---|---|---|---|
-| 1 | Registrazione | Email + password + accettazione Privacy/Termini | Account creato, email di conferma inviata |
-| 2 | Conferma email | Inserimento del **codice a 6 cifre** ricevuto (o click sul link) → sessione attiva; funziona in modo identico su Web, iOS e Android | `email_confirmed_at` valorizzato |
+| 1 | Registrazione | Email + accettazione Privacy/Termini (la password si sceglie **dopo** la conferma, §23.12) | Account creato, email di conferma inviata |
+| 2 | Conferma email e scelta della password | Inserimento del **codice a 8 cifre** ricevuto (o click sul link) → sessione attiva → scelta della password (`/set-password`); funziona in modo identico su Web, iOS e Android | `email_confirmed_at` valorizzato, password impostata |
 | 3 | Onboarding | Fuso orario/ora avvisi (precompilati), scelta template, inserimento date | ≥ 3 scadenze create in < 3 minuti |
 | 4 | Dashboard | Stato complessivo e prossime scadenze | L'utente capisce lo stato in pochi secondi |
 | 5 | Notifica | Email "Scade tra 7 giorni: Assicurazione auto"; sulle app anche **notifica push** | Ogni avviso consegnato una sola volta per canale |
@@ -93,20 +95,20 @@ Terminologia: in UI l'entità si chiama **"Scadenza"**; nel codice e nel DB **`l
 Regole trasversali: ogni azione che chiama la rete ha **loading** (skeleton per le liste, spinner e pulsante disabilitato per le azioni), **errore** (messaggio in italiano comprensibile + "Riprova"; mai stack/codici grezzi) e **autorizzazione** garantita dalla RLS (la UI è solo cortesia). Tutte le date sono mostrate in formato italiano (`15 dicembre 2026`, forma breve `15/12/2026`).
 
 ### F1 — Registrazione
-- **Comportamento**: form `/register`; invio → Supabase Auth `signUp` → redirect a `/verify-email`, che chiede il **codice a 6 cifre** inviato per email (`verifyOtp`, tipo `signup`). L'email contiene codice **e** link; il codice è il flusso primario perché non dipende da deep link (funziona uguale su Web, iOS e Android anche se l'email si apre in un'altra app).
-- **Input**: email, password (≥ 10 caratteri, max 72), checkbox obbligatoria "Accetto Termini e Privacy" (link). Nome opzionale (display name).
+- **Comportamento**: form `/register` (email, nome opzionale, consenso); invio → Supabase Auth `signUp` con una **password casuale monouso** generata dal client (64 caratteri, mai mostrata né salvata, §23.12) e `privacy_version` nei metadata → redirect a `/verify-email`, che chiede il **codice a 8 cifre** inviato per email (`verifyOtp`, tipo `signup`). L'email contiene codice **e** link; il codice è il flusso primario perché non dipende da deep link (funziona uguale su Web, iOS e Android anche se l'email si apre in un'altra app). Alla prima conferma il database **azzera la password** (§23.12) e l'app porta l'utente a `/set-password`, dove sceglie la password con la sessione appena ottenuta (poi `signOut({ scope: 'others' })`). Lo stato "la password va ancora scelta" è **letto dal server** (`profiles.password_setup_pending`) a ogni avvio con sessione: la guardia manda a `/set-password` finché è `true`.
+- **Input**: email, checkbox obbligatoria "Accetto Termini e Privacy" (link), nome opzionale (display name). La password (≥ 10 caratteri, max 72 **byte**) si inserisce **dopo la conferma**, in `/set-password`.
 - **Output**: utente in `auth.users`, riga `profiles` creata da trigger con `privacy_accepted_at` (`now()` lato database) e `privacy_version`. Email di conferma. Se `privacy_version` manca o non è supportata dal backend, la registrazione è **rifiutata in modo atomico** (nessun utente Auth senza profilo).
 - **Regole**: email normalizzata (trim, lowercase); conferma email obbligatoria prima del login; messaggio **neutro** se l'email esiste già ("Se l'indirizzo è valido riceverai una email") per non rivelare l'esistenza di account; CAPTCHA (Turnstile) prima della beta.
-- **Edge case**: email già registrata; link di conferma scaduto/già usato → `/verify-email` con "Invia di nuovo" (cooldown 60 s); password comune/breve; doppio click sul submit.
+- **Edge case**: email già registrata (il server risponde 422 `user_already_exists` per gli account confermati: la UI mostra lo stesso messaggio e la stessa schermata, ma l'API diretta resta distinguibile, §23.12); link di conferma scaduto/già usato → `/verify-email` con "Invia di nuovo" (cooldown 60 s); password comune/breve; doppio click sul submit; **pagina chiusa o browser riavviato dopo la conferma e prima di scegliere la password**: la sessione persiste e `password_setup_pending` resta `true` sul server, quindi al riavvio l'app riporta a `/set-password`; **link aperto su un altro dispositivo**: quel dispositivo ottiene la sessione e imposta la password, il dispositivo che ha registrato non ha sessione e accede poi con la nuova password; **sessione persa** (dati del sito cancellati, refresh token revocato): il login con password fallisce (`invalid_credentials`) e si usa "Password dimenticata", che funziona anche per l'account confermato senza password (§23.12).
 - **Loading**: pulsante in stato "Creazione in corso…". **Vuoto**: n/a. **Errore**: validazione inline per campo; errore rete/rate limit → banner "Troppi tentativi, riprova tra qualche minuto".
 - **Autorizzazioni**: solo ospiti (utente loggato → redirect `/dashboard`).
 
 ### F2 — Login, logout, recupero password
-- **Comportamento**: `/login` (email+password), `/forgot-password` (invio codice+link), `/reset-password` (codice a 6 cifre → `verifyOtp` tipo `recovery` → nuova password; in alternativa il link), logout dal menu utente. Sulle app il logout elimina anche il token push del dispositivo (§22.5).
+- **Comportamento**: `/login` (email+password), `/forgot-password` (invio codice+link), `/reset-password` (codice a 8 cifre → `verifyOtp` tipo `recovery` → nuova password; in alternativa il link), logout dal menu utente. Sulle app il logout elimina anche il token push del dispositivo (§22.5).
 - **Regole**: errore generico "Email o password non corretti"; `redirect` query param ammesso **solo** per path interni (whitelist, no URL assoluti); sessione persistente con refresh token; logout invalida la sessione locale.
 - **Edge case**: email non confermata → messaggio con "Invia di nuovo"; link reset scaduto → torna a `/forgot-password`; sessione scaduta durante l'uso → redirect a login preservando la destinazione.
 - **Loading/Errore**: come F1.
-- **Autorizzazioni**: `/login`, `/forgot-password`: ospiti; `/reset-password`: sessione di recovery.
+- **Autorizzazioni**: `/login`, `/forgot-password`: ospiti; `/reset-password`: sessione di recovery; `/set-password`: sessione ottenuta dalla conferma dell'email, con `password_setup_pending = true` (§23.12).
 
 ### F3 — Onboarding
 - **Comportamento**: 3 passi su `/onboarding`, saltabile solo dopo il passo 1.
@@ -201,12 +203,13 @@ Route in inglese (stabili), etichette in italiano. Guard di navigazione: `guestO
 
 | Route | Scopo | Accesso | Componenti principali | Dati necessari |
 |---|---|---|---|---|
-| `/` | Redirect a `/dashboard` o `/login` | – | – | sessione |
+| `/` | Redirect a `/dashboard` o `/login` (**fino a M7, `/dashboard` non esiste: `/` è la landing protetta**, con utente e "Esci") | auth | `HomePage` | sessione |
 | `/login` | Accesso | guestOnly | `AuthCard`, `LoginForm` | – |
 | `/register` | Registrazione | guestOnly | `AuthCard`, `RegisterForm`, `ConsentCheckbox` | versione policy |
 | `/verify-email` | Istruzioni + reinvio email | pubblica | `AuthCard`, `ResendEmailButton` | email (query/stato) |
 | `/forgot-password` | Richiesta reset | guestOnly | `ForgotPasswordForm` | – |
 | `/reset-password` | Nuova password | sessione recovery | `ResetPasswordForm` | – |
+| `/set-password` | Scelta della password dopo la conferma dell'email (§23.12) | auth, finché `profiles.password_setup_pending = true` (stato letto dal server, §23.12) | `SetPasswordForm` | – |
 | `/auth/confirm` | Atterraggio del **link** email (conferma/recovery): mostra un pulsante "Conferma" e solo al click chiama `verifyOtp({ token_hash, type })` (nessuna verifica automatica al caricamento, §23.4) | pubblica | `ConfirmCard` | `token_hash`, `type` |
 | `/onboarding` | Setup iniziale | auth, onboarding incompleto | `OnboardingStepper`, `PreferencesStep`, `TemplatePicker`, `QuickDatesStep` | profilo, template statici, categorie |
 | `/dashboard` | Stato generale | auth + onboarding | `StatusSummary`, `UrgentList`, `UpcomingList`, `EmptyState` | scadenze attive, profilo |
@@ -304,6 +307,7 @@ Le funzioni e i trigger interni vivono nello schema **`private`**, non esposto d
 | onboarding_completed_at | timestamptz | sì | – | |
 | privacy_accepted_at | timestamptz | no | – | `now()` lato database al momento della creazione del profilo; un timestamp fornito dal client è ignorato |
 | privacy_version | text | no | – | formato `YYYY-MM-DD`; letta dai metadata del signup e verificata contro le versioni supportate (es. `'2026-10-01'`) |
+| password_setup_pending | boolean | no | `false` | **Aggiunta in M3 (additiva, v0.5)**. `true` dal trigger quando la password viene azzerata alla prima conferma, `false` quando la password torna valorizzata. Il client la **legge** (La lettura discende dal grant `SELECT` **sull'intera tabella** `profiles` già concesso a `authenticated` da M2 (`20261008144123_profiles.sql`); la colonna **non** entra nella lista dei privilegi di `UPDATE` (né di `INSERT`)) e **non può scriverla**; vale `false` per i profili esistenti e per gli utenti creati da amministratore |
 | created_at / updated_at | timestamptz | no | `now()` | |
 
 Indici: PK. L'email resta solo in `auth.users` (nessuna duplicazione). Creazione: trigger `after insert on auth.users` (`private.handle_new_user`, `security definer`), che delega a `private.create_profile_for_user`: la creazione dell'utente è di Supabase Auth, l'attivazione del profilo applicativo avviene solo con un consenso privacy valido. La versione supportata è definita dalla funzione server-side `private.supported_privacy_versions()`, modificabile solo con una nuova migration. Se `privacy_version` manca o non è supportata, l'intera registrazione è rifiutata in modo atomico (nessun utente Auth senza profilo).
@@ -618,6 +622,8 @@ I template sono **dati statici** in `src/features/templates/templates.ts` (chiav
 ## 13. Sicurezza
 
 - **Autenticazione**: Supabase Auth, email+password, conferma email obbligatoria, password ≥ 10 caratteri, protezione password compromesse (HIBP) se disponibile nel piano **[V]**, JWT con scadenza breve (1 h) + refresh token con rotazione, `redirect URLs` in allow-list. OAuth rimandato.
+- **Pre-hijacking degli account non confermati**: chi registra l'email altrui con una password nota resterebbe in possesso dell'account dopo la conferma della vittima. Mitigazione: password monouso alla registrazione, azzeramento della password **nel database alla prima conferma** e scelta della password dopo la conferma (§23.12). Comportamento verificato in locale **[L]**; compatibilità con Supabase in hosting da verificare in staging **[S]** e **[B]**.
+- **Enumerazione e anti-abuso (rischi residui)**: le risposte dell'API di Supabase distinguono ancora alcuni casi (422 `user_already_exists`, tempi di login e reset diversi). I messaggi neutri della UI **non** eliminano l'enumerazione tramite API diretta. In locale non esiste alcun rate limit per IP. **[B]** prima della beta: rate limit effettivo su OTP e login verificato in hosting, CAPTCHA su registrazione, login e reset, lunghezza OTP verificata in hosting (§23.12).
 - **Autorizzazione**: **RLS su tutto** (§6) come unica barriera reale; il client è considerato ostile. Test pgTAP in CI.
 - **Isolamento**: FK composte `(item_id, owner_id)`; `owner_id` immutabile (trigger); `default auth.uid()` senza privilegio di INSERT/UPDATE per il client, con `with check` come seconda barriera.
 - **Validazione input**: doppia: **zod** nel client (UX) e **check constraint/trigger** nel DB (sicurezza); le Edge Function validano il body con zod. Testo reso sempre come testo (Vue escapa); mai `v-html` su dati utente.
@@ -635,7 +641,7 @@ I template sono **dati statici** in `src/features/templates/templates.ts` (chiav
 
 ## 14. Architettura frontend
 
-Stack **[D]**: Vue 3 (`<script setup>`), TypeScript `strict` (+ `noUncheckedIndexedAccess`) **pinnato a 6.0.x (non 7.x, §23.1)**, Vite, Pinia, Vue Router, Tailwind CSS, `@supabase/supabase-js`, **zod 4 + `@tanstack/vue-form` (Standard Schema; non più vee-validate, §23.1)**, Headless UI Vue, lucide, date-fns (locale `it`), `@fontsource-variable/inter`, Vitest + Vue Test Utils + Testing Library, Playwright + `@axe-core/playwright`, ESLint (flat config, `typescript-eslint`, `eslint-plugin-vue`, `vuejs-accessibility`) + Prettier. Package manager **pnpm**, **Node 24 LTS** (pinnato in `.nvmrc`/`engines`; minimo richiesto dallo stack: Node 22.12).
+Stack **[D]**: Vue 3 (`<script setup>`), TypeScript `strict` (+ `noUncheckedIndexedAccess`) **pinnato a 6.0.x (non 7.x, §23.1)**, Vite, Pinia, Vue Router, Tailwind CSS, `@supabase/supabase-js`, **zod 4 + composable di form proprio `useZodForm` (nessun `vee-validate` né `@tanstack/vue-form`, §23.1 e §23.12)**, Headless UI Vue, lucide, date-fns (locale `it`), `@fontsource-variable/inter`, Vitest + Vue Test Utils + Testing Library, Playwright + `@axe-core/playwright`, ESLint (flat config, `typescript-eslint`, `eslint-plugin-vue`, `vuejs-accessibility`) + Prettier. Package manager **pnpm**, **Node 24 LTS** (pinnato in `.nvmrc`/`engines`; minimo richiesto dallo stack: Node 22.12).
 
 **Matrice di compatibilità verificata il 2026-10-08 (npm registry)** — M1 installa **queste** versioni (range `~`/`^` entro la minor, lockfile obbligatorio):
 | Pacchetto | Versione | Vincolo che l'ha determinata |
@@ -650,7 +656,8 @@ Stack **[D]**: Vue 3 (`<script setup>`), TypeScript `strict` (+ `noUncheckedInde
 | vitest | 5.0.x | |
 | eslint / typescript-eslint / eslint-plugin-vue / eslint-plugin-vuejs-accessibility | 10.x / 8.71.x / 10.x / 2.6.x | tutti compatibili con ESLint 10 |
 | zod | 4.x | **`@vee-validate/zod` richiede zod ^3.24 → incompatibile**; sostituito |
-| @tanstack/vue-form | 1.33.x | usa Standard Schema (zod 4) **[V]** da confermare nello spike di M3 |
+| ~~@tanstack/vue-form~~ | **non adottato** (v0.5) | Spike di M3: compatibile con zod 4 ma non applica le trasformazioni di zod; sostituibile da un composable proprio (§23.12) |
+| @axe-core/playwright | 4.13.x (dev) | peer `playwright-core ≥ 1`; solo devDependency per i test e2e di accessibilità (da M3) |
 | @supabase/supabase-js | 2.x (2.117) | Node ≥ 22 |
 | @playwright/test | 1.64.x | |
 | @capacitor/core, cli, ios, android | **8.5.x** | CLI Node ≥ 22 |
@@ -738,7 +745,7 @@ Regole: i componenti non importano `supabase` direttamente (passano da `service.
 | **Frontend (SPA condivisa Web/iOS/Android)** | UI e shell, validazione per UX, formattazione, calcolo di "oggi"/stato in base al fuso, chiamate CRUD verso PostgREST (con RLS), upload verso Storage, richiesta signed URL, orchestrazione degli stati. Identico sui tre target: il backend **non distingue** la piattaforma, salvo per la registrazione del dispositivo push |
 | **Livello nativo (solo iOS/Android, via `platform/native`)** | Archiviazione sicura del token, registrazione push e ricezione tap, fotocamera/selettore file, visualizzatore documenti, condivisione, deep link, haptics, stato rete. **Nessuna logica di business** |
 | **PostgreSQL** | Dati, vincoli, **RLS**, quote (trigger), `complete_life_item`, `recurrence_next`, `sync_item_notifications`, `claim_due_notifications`, `handle_new_user`, `set_updated_at` (le funzioni interne nello schema `private`), coda di pulizia, `check_rate_limit`, job `pg_cron` |
-| **Supabase Auth** | Registrazione, conferma email e reset con **OTP a 6 cifre + link**, login, sessioni/JWT con refresh, rate limit auth, (futuro) OAuth (Sign in with Apple obbligatorio su iOS se si aggiunge un login social **[V]**) e MFA |
+| **Supabase Auth** | Registrazione, conferma email e reset con **OTP a 8 cifre + link**, trigger anti pre-hijacking su `auth.users` (§23.12), login, sessioni/JWT con refresh, rate limit auth, (futuro) OAuth (Sign in with Apple obbligatorio su iOS se si aggiunge un login social **[V]**) e MFA |
 | **Storage** | Bucket privato `documents`, policy RLS, limiti dimensione/MIME, URL firmati |
 | **Edge Functions (Deno/TS)** | `send-notifications` (cron, `service_role`; canali email **e push**), `delete-account`, `export-data`, `cleanup-storage` (cron: coda + orfani + log vecchi + token push scaduti). Codice condiviso in `functions/_shared` (client Supabase admin, adapter email `resend`/`mock`, adapter push `fcm`/`mock`, zod, logger, rate limit) |
 | **Provider email** | Consegna avvisi (Resend, **[D]** salvo verifica regione UE/DPA) e, via SMTP, email di Auth |
@@ -879,14 +886,29 @@ Ogni milestone è piccola, verificabile e committabile. **DoD comune a tutte**: 
 - *Gate v0.3*: tutte le query usano **colonne esplicite** (mai `select *`); le funzioni RPC pubbliche sono parte del contratto API (§23.10).
 - *DoD*: `supabase start` + `db reset` + `test db` verdi; tipi generati committati; **azione esterna**: nessuna (Docker locale).
 
-**M3 — Autenticazione**
-- *Obiettivo*: registrazione, conferma email, login, logout, reset password, guard.
-- *File*: `features/auth/*`, `pages/Login|Register|VerifyEmail|ForgotPassword|ResetPassword|AuthConfirm`, `router/guards.ts`, `layouts/AuthLayout`, `shared/ui` (Button, Input, Card, Toast), template email Auth in `supabase/config.toml`/`templates`.
-- *DB*: consenso in metadata → profilo.
-- *Gate v0.3*: form con `@tanstack/vue-form` + zod 4 (spike iniziale per confermare Standard Schema **[V]**, fallback: composable proprio); pagina `/auth/confirm` con pulsante; scadenza OTP 10 minuti; `signOut({ scope: 'local' })` come logout predefinito; dopo il reset password `signOut({ scope: 'others' })` (§23.3, §23.4).
-- *Multipiattaforma*: conferma email e reset con **codice OTP a 6 cifre** (`verifyOtp`) come flusso primario, link come alternativa; template email con codice e link; gestore deep link con whitelist dei path (la parte nativa arriva in M16).
-- *Test*: unit (schemi, guard, whitelist redirect e deep link), E2E registrazione/login/reset (Mailpit) sia con codice sia con link, a11y.
-- *DoD*: flussi E2E verdi; nessuna enumerazione di account; password policy attiva; `redirect` sicuro; il flusso con codice non dipende da nessun deep link.
+**M3 — Autenticazione** *(piano v0.5 approvato; implementazione non iniziata)*
+- *Fuori perimetro e non verificati in M3*: inviti amministrativi (`inviteUserByEmail`), provider esterni (OAuth) e telefono. Il trigger non li copre per costruzione e il loro comportamento con `confirmation_sent_at` e `encrypted_password` non è stato provato (§23.12 A).
+- *Obiettivo*: registrazione senza password iniziale, conferma (codice a 8 cifre e link), scelta della password, login, logout locale, reset password, ripristino e refresh della sessione, guard, deep link (solo logica web), mappatura errori.
+- *File da creare*:
+  - `src/features/auth/`: `constants.ts` (`PRIVACY_POLICY_VERSION`, `OTP_LENGTH=8`, cooldown reinvio), `schemas.ts` (zod: email, password in byte, OTP `^\d{8}$`, consenso), `errors.ts` (`toAuthAppError`), `service.ts` (funzioni pure su `AppSupabaseClient`), `store.ts` (Pinia: sessione, `ready`, `signingOut`, `endReason`, `pendingEmail`, `passwordSetupPending` derivato da `profiles.password_setup_pending` letto dal server, `recoveryPending`), `redirect.ts` (`safeRedirect`), `deepLinks.ts` (`resolveDeepLink`, `installDeepLinks`), `lifecycle.ts` (start/stop auto-refresh su resume/pause, solo native), `sanitizeSession.ts`, `components/` (`AuthCard`, `OtpField`, `ConsentField`, `ResendButton`, `SetPasswordForm`).
+  - `src/shared/composables/useZodForm.ts` (§23.12), `src/shared/ui/{Button,TextField,InlineAlert}.vue`, schermata di caricamento dell'app, `src/layouts/AuthLayout.vue`.
+  - `src/pages/{Login,Register,VerifyEmail,AuthConfirm,ForgotPassword,ResetPassword,SetPassword}Page.vue`, `src/app/router/guards.ts`.
+  - `supabase/templates/{confirmation,recovery}.html`, `supabase/migrations/<timestamp>_auth_prehijack_guard.sql`, `supabase/tests/database/50_auth_prehijack.test.sql`.
+  - Test: `tests/integration/{auth-signup-confirm,auth-login-session,auth-recovery,auth-prehijack,auth-enumeration,auth-privacy}.int.test.ts`, helper `tests/integration/{mail,db}.ts` (Mailpit via `fetch`; retrodatazione controllata dei token), `e2e/auth.spec.ts`, `scripts/run-e2e.mjs`.
+- *File da modificare*: `src/app/{main.ts,App.vue}`, `src/app/router/{index,routes}.ts`, `src/pages/HomePage.vue` (utente e "Esci"), `src/shared/types/database.ts` (rigenerato: solo la nuova colonna), `src/features/profile/` (lettura di `password_setup_pending`, solo se necessaria), `src/shared/lib/{errors,supabaseClient}.ts` (+ test; nuova opzione additiva `deferInitialization`, **default invariato**), `tests/integration/support.ts`, `scripts/run-integration.mjs` (passa `MAILPIT_URL`), `supabase/config.toml`, `package.json` e `pnpm-lock.yaml` (script `supabase:start` con Mailpit, `test:e2e`, devDependency `@axe-core/playwright`), `playwright.config.ts`, `.github/workflows/ci.yml`, `docs/SPECIFICA.md`, `docs/API_CONTRACT.md`, `README.md`, `CLAUDE.md`. **Eliminare**: nessun file.
+- *Migration*: **una** (`auth_prehijack_guard`, append-only), con tre componenti, tutte **verificate solo in locale [L]**:
+  1. `private.wipe_password_on_first_confirmation()` (`SECURITY INVOKER`, `search_path = ''`) e trigger `BEFORE UPDATE` su `auth.users`: condizione `OLD.email_confirmed_at IS NULL AND NEW.email_confirmed_at IS NOT NULL AND OLD.confirmation_sent_at IS NOT NULL` → `NEW.encrypted_password := NULL`.
+  2. Colonna additiva `public.profiles.password_setup_pending boolean NOT NULL DEFAULT false` **senza** `GRANT SELECT (colonna)`: la lettura discende dal grant `SELECT` **sull'intera tabella** `profiles` già concesso a `authenticated` da M2 (`20261008144123_profiles.sql`); la colonna **non** entra nella lista dei privilegi di `UPDATE` (né di `INSERT`); **nessun** privilegio di INSERT/UPDATE sulla colonna per `authenticated` e nessun accesso per `anon`. Un `GRANT SELECT (colonna)` aggiuntivo è considerato ridondante (**ipotesi PostgreSQL basata sul grant di tabella, non misurata**: negli spike la colonna aveva anche un grant di colonna, quindi la lettura senza di esso non è stata provata); non va aggiunto senza che il test (f) dimostri che serve. Il client non deve mai ricevere privilegi di scrittura sulla colonna.
+  3. `private.track_password_setup()` (`SECURITY DEFINER`, `search_path = ''`, solo `UPDATE public.profiles SET password_setup_pending = … WHERE id = NEW.id`) e trigger **`AFTER UPDATE`** su `auth.users` con `WHEN (OLD.encrypted_password IS DISTINCT FROM NEW.encrypted_password)`: `true` se la password passa da valorizzata a NULL, `false` se da NULL a valorizzata. **Non** si usa `UPDATE OF encrypted_password`, perché non scatta quando la colonna è modificata da un trigger `BEFORE` (osservato).
+  - `REVOKE EXECUTE … FROM PUBLIC` su entrambe le funzioni (in PostgreSQL `EXECUTE` è concesso a `PUBLIC` per default). **Misurato negli spike**: `EXECUTE` è concesso a `PUBLIC`, lo schema `private` non ha `USAGE` per `anon`/`authenticated`, i trigger hanno funzionato **senza** la revoca. **Ipotesi non verificata**: che PostgreSQL controlli `EXECUTE` sulla funzione trigger solo alla `CREATE TRIGGER` e non quando il trigger scatta (eseguito da `supabase_auth_admin`); quindi che la revoca non impedisca conferma e aggiornamento del flag. Va **verificata, non presunta** (test (j)). Le funzioni di M2 in `private` non hanno `REVOKE EXECUTE` (M2 revoca solo l'accesso allo schema): la revoca di M3 non le modifica.
+  - **Non modifica** `on_auth_user_created` (AFTER INSERT) né `private.create_profile_for_user`: la creazione atomica di utente, profilo e consenso privacy resta invariata. Modifica **solo in modo additivo** una tabella di M2 (`profiles`): vanno aggiornati `docs/API_CONTRACT.md`, `src/shared/types/database.ts` e il test pgTAP dei privilegi di colonna.
+- *Configurazione locale* (`supabase/config.toml`): `[auth.email] enable_confirmations = true`, `otp_length = 8`, `otp_expiry = 600`, `max_frequency = "1s"` (in produzione 60 s **[B]**); `[auth] minimum_password_length = 10`, `site_url = "http://localhost:5173"`, `additional_redirect_urls = ["http://localhost:4173"]`; template `confirmation` e `recovery`; `email_sent` invariato. **Mailpit** attivo in `supabase:start`, nel job CI `database` e nel job `e2e` (che avvia Supabase reale e ricava URL e chiavi con `supabase status -o env`, senza `ci-placeholder`).
+- *Dipendenze*: solo `@axe-core/playwright` (dev). Nessuna dipendenza di runtime.
+- *Test di regressione M1/M2 (devono restare verdi senza modifiche)*: 55 unit, 33 integrazione, 157 pgTAP, e2e smoke; `createSupabaseClient` senza `deferInitialization` identico (test esistenti); utenti creati con admin `email_confirm` mantengono la password (suite RLS A/B); rifiuto atomico del consenso privacy invariato; `on_auth_user_created` ancora presente e unico sull'INSERT; i grant di colonna di `profiles` esistenti invariati (solo `password_setup_pending` si aggiunge in sola lettura).
+- *Test di sicurezza e caratterizzazione (Supabase Auth reale, nessun mock)*: pre-hijacking V1 (attaccante per primo, vittima dopo), V2 (link non richiesto), V3 (polling del login durante la conferma) e **V4** (recovery su account non confermato) con password azzerata, `invalid_credentials` per l'attaccante, scelta password della vittima; utenti admin, utenti confermati, email change e recovery non azzerati o azzerati come previsto; `updateUser({password})` senza sessione rifiutato; login prima della conferma `email_not_confirmed`; privacy mancante/non supportata/malformata → 500 atomico senza righe; timestamp del client ignorato; replay di codice e link; codice errato/scaduto (retrodatazione di **entrambe** le colonne `*_sent_at` e `one_time_tokens.created_at`); reinvio entro 1 s → 429 `over_email_send_rate_limit`; enumerazione (422, tempi: caratterizzati e documentati, non promessi); logout offline con `fetch` che fallisce; refresh in volo + logout; 10 `getSession()` paralleli → 1 refresh; sessione isolata tra due utenti. **Nessun test pretende un 429 per tentativi OTP in locale** (limitatore per IP assente).
+- *Test della migration (pgTAP e integrazione)*: (a) V1–V4 con 0 sessioni per l'attaccante nella gara di polling; (b) flag `true` dopo la conferma (OTP, link e recovery su account non confermato) e `false` dopo `updateUser({password})`; (c) **atomicità**: se il trigger `AFTER` fallisce la conferma fallisce in blocco (HTTP 500 `Error confirming user`), l'account resta non confermato con la password invariata e flag `false`, e lo **stesso codice** riesce dopo il ripristino (fail-closed); un rollback lascia conferma, password e flag come prima; (d) password rifiutata (`weak_password`) → flag invariato; (e) **profilo mancante**: il test deve far **fallire** il flusso o segnalare la violazione dell'invariante di M2 (profilo sempre creato con l'utente); non deve passare come flusso riuscito (il trigger da solo non lo rileva: `UPDATE` su 0 righe); (f) il client non può scrivere la colonna (`42501`), `anon` non la legge, ogni utente vede solo la propria riga; (g) `EXECUTE` revocato a `PUBLIC` sulle due funzioni e schema `private` non utilizzabile da `anon`/`authenticated`; (h) **sessioni**: test esplicito che dopo il cambio password le altre sessioni siano revocate (comportamento osservato in locale, **dipendente dalla versione di GoTrue**) e, a prescindere, `signOut({ scope: 'others' })` eseguito dall'app come difesa aggiuntiva; (i) **mutazioni**: la suite deve **fallire** senza trigger `BEFORE`, con condizione invertita (`confirmation_sent_at IS NULL`, che riapre l'attacco **e** azzera le password degli utenti creati da amministratore), con condizione mai vera e con condizione troppo larga (azzera le password dopo la conferma); senza trigger `AFTER` (flag mai `true`) o con `UPDATE OF encrypted_password` (flag mai `true`); (j) **revoche applicate** (test di integrazione **da scrivere, non ancora eseguito**): con `REVOKE EXECUTE … FROM PUBLIC` applicato a **entrambe** le funzioni, conferma (OTP, link, recovery) e aggiornamento del flag continuano a funzionare e `PUBLIC` non ha `EXECUTE` su nessuna delle due; se non funzionano, la revoca va riconsiderata prima di procedere.
+- *Criteri di accettazione verificabili*: (1) registrazione → email con codice a 8 cifre e link; (2) conferma con codice e con link riuscite, sessione attiva, `/set-password` obbligatorio; (3) password dell'attaccante azzerata alla conferma in V1, V2, V3 e **V4**; (4) utenti admin e confermati mantengono la password; (5) nessun utente Auth senza profilo; consenso mancante o non supportato rifiutato; (6) login, logout locale (storage vuoto anche offline), reset password funzionanti; (7) sessione ripristinata al riavvio; avvio offline senza blocco; (8) refresh concorrente = una richiesta; nessuna sessione risorta dopo il logout; (9) guard senza loop, `redirect` e deep link in whitelist; (10) codice/link monouso, parametri rimossi dall'URL; (11) `axe` senza violazioni sulle pagine di auth; (12) nessun segreto nei file tracciati; (13) documentazione che distingue **[L]**, **[S]** e **[B]**; (14) `profiles.password_setup_pending` è `true` dopo la conferma e `false` dopo la scelta della password, anche dopo chiusura della scheda, riavvio con access token scaduto e link aperto su un altro dispositivo; (15) il client non scrive la colonna; (16) conferma fail-closed e atomica se il trigger `AFTER` fallisce; (17) la suite fallisce con ciascuna delle mutazioni elencate (compreso V4 e il caso con revoche applicate, test (j)); (18) **profilo mancante**: il test fa fallire il flusso o segnala la violazione dell'invariante di M2; non è mai trattato come flusso riuscito; (19) **revoca delle sessioni**: dopo il cambio password le altre sessioni risultano revocate (test esplicito) **in locale**; è un comportamento **dipendente dalla versione di GoTrue**, non una garanzia e **non può essere considerato valido in hosted sulla sola base degli spike locali** (verifica in staging); `signOut({ scope: 'others' })` resta in ogni caso.
+- *M3 Final Gate*: `lint` · `format:check` · `typecheck` · `test:unit` · `test:coverage` · `db:reset` + `db:lint` + `db:test` · `test:integration` (auth, sicurezza, regressione) · e2e di auth con axe · `build` + `check:bundle` · `pnpm audit` · tipi generati aggiornati **solo** per `profiles.password_setup_pending` · CI verde su PR (job `database` ed `e2e` con Supabase e Mailpit) · branch `branch-angelo` e working tree · conformità allo scope (nessun onboarding, dashboard, notifiche, Capacitor nativo, shell mobile) · documentazione coerente · **elenco esplicito delle verifiche in staging ancora aperte ([S]) e delle condizioni bloccanti per la beta ([B], §23.12)**.
 
 **M4 — App shell e design system**
 - *Obiettivo*: **`DesktopShell` e `MobileShell`** reali (sidebar / tab bar, safe area, transizioni a stack), componenti base, stati.
@@ -1077,7 +1099,7 @@ Esito:
 | Shell UI | `DesktopShell` + `MobileShell` sullo stesso design system | Esperienza touch reale senza duplicare le pagine |
 | Plugin nativi | Dietro porte `platform/`, import dinamico solo in `platform/native` | Bundle Web pulito, testabilità, sostituibilità dei plugin |
 | Repo | Singolo package, `ios/` e `android/` committati | Semplicità; nessun monorepo necessario |
-| Conferma email/reset | OTP a 6 cifre primario + link | Funziona su tutte le piattaforme senza deep link |
+| Conferma email/reset | OTP a 8 cifre primario + link (la lunghezza va verificata anche in hosting **[B]**) | Funziona su tutte le piattaforme senza deep link; 8 cifre riducono il rischio di brute force ma non lo eliminano (§23.12) |
 | Deep link | Universal Links / App Links su dominio proprio (no solo schema custom) | Più robusto; evita problemi noti dei redirect con solo schema **[V]** |
 | Push | FCM (HTTP v1) per Android e iOS, fan-out per dispositivo con tabella `notification_deliveries` | Un solo provider server; idempotenza per dispositivo |
 | Sessione sulle app | Keychain/Keystore tramite `SecureStorage` | Il token non resta in `localStorage` nativo |
@@ -1097,7 +1119,8 @@ Esito:
 | Notifiche | Tabella + pg_cron + Edge Function + idempotency key | Niente code esterne, costi bassi, nessun duplicato |
 | Reminder | `reminder_days` sull'item, istanze in `notifications` | Niente tabella ridondante |
 | Template | Statici nel codice | Versionati con le release, nessun costo DB |
-| Form | zod 4 + `@tanstack/vue-form` (Standard Schema) | `@vee-validate/zod` è incompatibile con zod 4 (peer zod ^3); schema unico riusabile e tipizzato |
+| Form | zod 4 + composable proprio `useZodForm` (v0.5) | `@vee-validate/zod` è incompatibile con zod 4; `@tanstack/vue-form` è compatibile ma non indispensabile per 5 form piccoli (da rivalutare in M5); schema unico per validazione e normalizzazione (§23.12) |
+| Registrazione | Password monouso + azzeramento alla prima conferma (trigger) + scelta della password dopo la conferma | Chiude il pre-hijacking degli account non confermati; richiede una migration su `auth.users` e la verifica in staging (§23.12) |
 | TypeScript | 6.0.x pinnato (non 7.x) | `typescript-eslint` non supporta ancora TS ≥ 6.1 |
 | Target minimi nativi | iOS 16.4, WebView Android 111 | Baseline di Vite 8 e Tailwind 4 |
 | UI headless | Headless UI Vue + Tailwind | Accessibilità di modal/menu senza reinventare |
@@ -1299,10 +1322,10 @@ Verifica eseguita il 2026-10-08 con controlli sul registro npm (versioni, `engin
 
 | # | Punto | Stato trovato | Rischio se ignorato | Modifica alla specifica | Milestone |
 |---|---|---|---|---|---|
-| 1 | Compatibilità Vue/Vite/Capacitor/TS | **DA CORREGGERE** (corretto) | Build lint rotta (TS 7), dipendenze con peer conflittuali (vee-validate/zod), app con stili rotti su iOS < 16.4 e WebView vecchie | Matrice versioni pinnata (§14), TS 6.0.x, TanStack Form, iOS 16.4, WebView 111 | M1, M3, M14 |
+| 1 | Compatibilità Vue/Vite/Capacitor/TS | **DA CORREGGERE** (corretto) | Build lint rotta (TS 7), dipendenze con peer conflittuali (vee-validate/zod), app con stili rotti su iOS < 16.4 e WebView vecchie | Matrice versioni pinnata (§14), TS 6.0.x, composable di form su zod (v0.5, al posto di TanStack Form), iOS 16.4, WebView 111 | M1, M3, M14 |
 | 2 | Push FCM/APNs | **DA CORREGGERE** (corretto) + **DA VERIFICARE** su dispositivi | Push mai consegnate su iOS (token APNs inviato a FCM), token validi cancellati dopo 60 giorni, duplicati/avvisi persi, push a un utente dopo il logout | Plugin deciso, errori/retry/TTL/canale Android, revoca, purge a 270 giorni (§23.2) | M18 |
 | 3 | Auth + Keychain/Keystore | **DA CORREGGERE** (corretto) | Logout che espelle l'utente da tutti i dispositivi, sessione "fantasma" dopo reinstallazione su iOS, refresh bloccato in background | Politica token e logout `scope: 'local'`, flag primo avvio (§23.3) | M2, M16 |
-| 4 | OTP 6 cifre + link | **DA CORREGGERE** (corretto) | Link consumato dagli scanner antivirus delle email, flussi duplicati confusi, brute force dell'OTP | `/auth/confirm` con pulsante, scadenza 10 min, regole di duplicazione (§23.4) | M3 |
+| 4 | OTP 8 cifre + link (v0.5; era 6) | **DA CORREGGERE** (corretto; vedi §23.12) | Link consumato dagli scanner antivirus delle email, flussi duplicati confusi, brute force dell'OTP | `/auth/confirm` con pulsante, scadenza 10 min, regole di duplicazione (§23.4) | M3 |
 | 5 | Cancellazione account | **DA CORREGGERE** (corretto) | Cancellazione bloccata o a metà (utente con file in Storage), dati residui, ripristino da backup che resuscita l'account | Processo ripristinabile, inventario dati, registro anti-ripristino (§23.5) | M11 |
 | 6 | Offline sola lettura | **DA CORREGGERE** (era non definito; ora definito) | Dati personali in chiaro sul telefono, cache che sopravvive al logout, dati vecchi spacciati per aggiornati | Politica di cache esatta (§23.6) | M19 |
 | 7 | Universal/App Links | **DA CORREGGERE** (corretto) + **DA VERIFICARE** su dispositivi | Link che aprono il browser invece dell'app, verifica fallita per rewrite SPA o per firma Play, route non whitelisted | Config per ambiente, whitelist, fallback schema custom (§23.7) | M13, M16 |
@@ -1316,7 +1339,7 @@ Verifica eseguita il 2026-10-08 con controlli sul registro npm (versioni, `engin
 
 **Problemi trovati e corretti**
 1. **TypeScript**: `latest` su npm è **7.0.2**, ma `typescript-eslint` 8.71 dichiara `typescript <6.1.0`. → pin a **6.0.x**; aggiornare a TS 7 solo quando lint e `vue-tsc` lo supportano ufficialmente.
-2. **vee-validate**: `@vee-validate/zod` richiede zod ^3.24; il progetto usa zod 4. → **`@tanstack/vue-form` + zod 4 (Standard Schema)**; da confermare con uno spike di mezza giornata all'inizio di M3 **[V]**; fallback: piccolo composable proprio.
+2. **vee-validate**: `@vee-validate/zod` richiede zod ^3.24; il progetto usa zod 4. → **`@tanstack/vue-form` + zod 4 (Standard Schema)**; spike eseguito in M3 (v0.5): compatibile, ma **non adottato**; si usa un composable proprio su zod (§23.12).
 3. **Baseline browser**: Vite 8 imposta `build.target = baseline-widely-available` (Chrome 111, Safari 16.4, iOS 16.4) e Tailwind 4 richiede Chrome 111/Safari 16.4. I minimi di Capacitor (iOS 15, WebView 60 di default) sono più bassi → rischio di **app che si apre ma con layout rotto**. → **iOS 16.4** e **`minWebViewVersion` 111**. Poiché Capacitor su Android si limita a loggare l'errore sotto la soglia, il controllo di avvio mostra "Aggiorna Android System WebView" (UA `Chrome/<n>` < 111) o la pagina di `server.errorPath`.
 4. Controllo automatico in CI: fallisce se `typescript` supera la 6.0.x senza `typescript-eslint` compatibile e se manca `build.target` esplicito.
 
@@ -1354,16 +1377,18 @@ Backoff come §11 (5 min, 30 min, 2 h, 6 h; max 5 tentativi), applicato **per di
 - **Reinstallazione**: su iOS gli elementi Keychain **possono sopravvivere alla disinstallazione** (comportamento non garantito da Apple) → al **primo avvio** dopo l'installazione (marker in `Preferences`, che l'OS cancella con l'app) si **elimina sempre** la sessione dal Keychain e la chiave della cache, poi si imposta il marker. Su Android le chiavi Keystore vengono rimosse con l'app; se i dati cifrati sono illeggibili si tratta come "nessuna sessione"; `allowBackup=false` e regole di esclusione dal trasferimento dispositivo. **Esito deterministico**: dopo reinstallazione l'utente è sempre disconnesso. I refresh token della vecchia installazione restano validi lato server fino a scadenza/revoca (gestibile con "Esci da tutti i dispositivi").
 - **Test**: unit del wrapper storage (set/get/remove, errore di decifratura), prova su dispositivo di reinstallazione iOS/Android, logout locale non influente sul Web, refresh in background/resume.
 
-### 23.4 OTP a 6 cifre + link (punto 4)
+### 23.4 OTP a 8 cifre + link (punto 4)
 
-- **Configurazione**: codice a 6 cifre; **scadenza 600 s** (default Supabase 3600, massimo 86400) **[R]**; invio massimo 1 ogni 60 s per utente (default) e limiti orari/IP configurati con SMTP personalizzato **[V]**; Turnstile prima della beta.
+> **v0.5**: la lunghezza passa da 6 a **8 cifre** (`otp_length = 8`) dopo la misura del brute force in locale (§23.12). Il dettaglio dei rischi e dei gate è in §23.12; qui restano le regole di funzionamento.
+
+- **Configurazione**: codice a **8 cifre** (`otp_length = 8`) **[L]**; **scadenza 600 s** (default Supabase 3600, massimo 86400) **[R]**; invio massimo 1 ogni 60 s per utente (default) e limiti orari/IP configurati con SMTP personalizzato **[V]**; Turnstile prima della beta.
 - **Link**: il template Auth usa `https://app.<dominio>/auth/confirm?token_hash={{ .TokenHash }}&type=<signup|recovery>` e **non** `{{ .ConfirmationURL }}`. La pagina mostra un pulsante "Conferma" e chiama `verifyOtp({ token_hash, type })` **solo al click** (gli scanner antivirus/Safe Links caricano i link e consumerebbero un token a uso singolo; un GET non consuma nulla). `type` ammesso solo tra i valori attesi **[V]** (verificare in M3 se per la conferma registrazione serve `signup` o `email`).
 - **Uso per piattaforma**: Web → codice o link nello stesso browser. iOS/Android → il **codice** è il flusso primario (digitato nell'app); il link, se l'app è installata, apre `/auth/confirm` nell'app tramite Universal/App Link (§23.7), altrimenti nel browser.
 - **Duplicazione**: codice e link derivano dallo stesso token monouso; il primo che viene usato lo consuma, l'altro risponde "scaduto". Gestione UX: se esiste già una sessione valida → procedi; altrimenti "Codice già usato o scaduto → Invia di nuovo". Se la conferma avviene su un altro dispositivo, la schermata `/verify-email` offre "Ho già confermato → Accedi".
-- **Sicurezza**: spazio di 10⁶ codici; con ~30 verifiche ogni 5 minuti per IP **[V]** e scadenza di 10 minuti un attaccante ottiene ≲ 60 tentativi per IP per token (probabilità ≈ 6·10⁻⁵ per IP) → rischio basso, mitigato da Turnstile e scadenza breve; monitoraggio dei tentativi falliti e, se necessario, passaggio a 8 cifre (configurabile). Nessun token nei log; messaggi neutri contro l'enumerazione di account.
+- **Sicurezza**: spazio di 10⁸ codici. **La stima precedente (≈ 60 tentativi per IP, 6·10⁻⁵) era sbagliata**: in locale non c'è alcun limite per IP (`GOTRUE_RATE_LIMIT_HEADER` non impostato) e sono stati misurati **~430 richieste al secondo senza alcun 429**, cioè ~258.000 tentativi in 10 minuti: 25,8 % di successo con 6 cifre, 0,26 % con 8 (limite superiore, senza latenza di rete) **[L]**. Otto cifre **riducono** il rischio ma **non lo risolvono**: il rate limit di produzione deve essere verificato **[B]**. Nessun blocco per singolo token (sei codici errati e poi quello giusto funziona) **[L]**. Nessun token nei log; messaggi neutri nella UI (non eliminano l'enumerazione via API, §23.12).
 - **Recovery**: `verifyOtp` (recovery) → sessione → `updateUser({ password })` → `signOut({ scope: 'others' })`.
 - **Email**: template in italiano (codice ben visibile, pulsante, scadenza 10 min, "se non sei stato tu ignora l'email"), HTML + testo, **senza tracciamento dei click**; invio via SMTP personalizzato.
-- **Test**: E2E codice e link; link prefetchato (richiesta GET senza click) che non consuma il token; codice errato/scaduto/riusato; doppio flusso su due dispositivi; rate limit.
+- **Test**: E2E codice e link; link prefetchato (richiesta GET senza click) che non consuma il token; codice errato/scaduto/riusato; doppio flusso su due dispositivi; rate limit **sulle email** (il limite per IP non esiste in locale: nessun test pretende un 429 sui tentativi OTP, §23.12).
 
 ### 23.5 Cancellazione account (punto 5)
 
@@ -1521,7 +1546,7 @@ Tutte le righe **[V]** vanno riverificate in M21 e a ogni release: le regole cam
 
 Prima delle correzioni l'esito sarebbe stato **BLOCKED** per tre motivi, tutti riguardanti M1–M3, e per due lacune che avrebbero imposto rifacimenti:
 1. TypeScript 7 (`latest`) incompatibile con `typescript-eslint` → pin a 6.0.x.
-2. `vee-validate` incompatibile con zod 4 → `@tanstack/vue-form`.
+2. `vee-validate` incompatibile con zod 4 → `@tanstack/vue-form` (v0.5: sostituito da un composable proprio su zod, §23.12).
 3. Minimi nativi (iOS 15, WebView 60) incompatibili con Vite 8/Tailwind 4 → iOS 16.4, WebView 111.
 4. `app-config.json` previsto troppo tardi: una prima release senza il controllo non può più essere forzata ad aggiornarsi → spostato a M14.
 5. Cancellazione account non ripristinabile e senza registro anti-ripristino → processo e tabella `account_deletions` (M11).
@@ -1529,7 +1554,7 @@ Prima delle correzioni l'esito sarebbe stato **BLOCKED** per tre motivi, tutti r
 **Nessun blocco residuo prima di M1.** Restano elementi **DA VERIFICARE** programmati, non bloccanti per M1:
 | Elemento | Quando | Come |
 |---|---|---|
-| Standard Schema di TanStack Form con zod 4 | Inizio M3 | Spike di mezza giornata (fallback: composable proprio) |
+| Standard Schema di TanStack Form con zod 4 | Inizio M3 | **Eseguito (v0.5)**: compatibile; non adottato, si usa un composable proprio (§23.12) |
 | `type` di `verifyOtp` per la conferma registrazione, limiti di rate/SMTP | M3 | Lettura docs correnti e prova locale |
 | Plugin secure storage su Keychain/Keystore reali | M16 | Prova su dispositivi |
 | AASA/assetlinks, apertura dei link da client di posta | M16 | Matrice di prova §23.7 |
@@ -1540,3 +1565,129 @@ Prima delle correzioni l'esito sarebbe stato **BLOCKED** per tre motivi, tutti r
 | Iscrizione Apple Developer | Entro M12 | Azione esterna da concordare |
 
 Fonti consultate: [Vite – build options](https://vite.dev/config/build-options), [Tailwind – compatibilità browser](https://tailwindcss.com/docs/compatibility), [Capacitor – configurazione](https://capacitorjs.com/docs/config), [Capacitor 8 – aggiornamento](https://capacitorjs.com/docs/updating/8-0), [Supabase – rate limit Auth](https://supabase.com/docs/guides/auth/rate-limits), [Supabase – template email](https://www.supabase.com/docs/guides/auth/auth-email-templates), [Supabase – gestione utenti](https://supabase.com/docs/guides/auth/auth-user-management), [Firebase – codici di errore FCM](https://firebase.google.com/docs/cloud-messaging/error-codes), [Firebase – gestione token](https://firebase.google.com/docs/cloud-messaging/manage-tokens), [Apple – DSA trader](https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-eu-digital-services-act-compliance-information), [Google Play – test chiuso](https://support.google.com/googleplay/android-developer/answer/14151465?hl=en-GB), [Android – target API](https://developer.android.com/google/play/requirements/target-sdk), [Apple – requisiti SDK](https://www.developer.apple.com/news/upcoming-requirements/).
+
+### 23.12 Autenticazione M3 (v0.5): stato della verifica, pre-hijacking, form, sessione, rischi e gate beta
+
+**Come leggere questa sezione.** **[L]** = osservato in spike su uno stack Supabase locale temporaneo (CLI 2.120, GoTrue incluso, OTP a 8 cifre, conferma email attiva, template e Mailpit); **[S]** = da verificare in staging su Supabase in hosting; **[B]** = condizione obbligatoria prima della beta. **Nulla di quanto segue è ancora implementato nel repository**: gli spike erano script temporanei fuori dal repository e lo stack di spike è stato eliminato.
+
+#### A. Pre-hijacking degli account non confermati
+
+**Attacco (riprodotto senza mitigazioni) [L].** Se esiste già un account non confermato per l'email, GoTrue **non sovrascrive la password** alla registrazione successiva e invia un nuovo codice (il precedente viene invalidato).
+
+| Variante | Scenario | Esito senza mitigazione |
+|---|---|---|
+| **V1** | L'attaccante registra l'email della vittima con la password A; la vittima si registra dopo (la sua password è ignorata) e conferma con l'ultimo codice | Login con A **riesce**; quello della vittima no |
+| **V2** | L'attaccante registra l'email; la vittima clicca il link dell'email non richiesta | Login con A **riesce** |
+| **V3** | L'attaccante prova il login con A in continuo mentre la vittima conferma | L'attaccante ottiene una sessione **durante** la conferma |
+| **V4** | L'attaccante registra l'email con la password A; la vittima non si registra ma usa "Password dimenticata" e completa il **recovery su un account non confermato** (il recovery conferma l'email) | Login con A **riesce** prima che la vittima scelga la password |
+
+**Soluzione adottata** (approvata come direzione, **condizionata alla verifica in staging [S][B]**):
+
+1. `/register` (email, nome opzionale, consenso): il client chiama `signUp` con una **password casuale monouso** di 64 caratteri (≤ 72 byte, mai mostrata né salvata) e `privacy_version` nei metadata.
+2. Conferma con codice a 8 cifre o link (`verifyOtp`): nell'UPDATE di conferma un trigger `BEFORE UPDATE` su `auth.users` imposta `encrypted_password = NULL` quando `OLD.email_confirmed_at IS NULL AND NEW.email_confirmed_at IS NOT NULL AND OLD.confirmation_sent_at IS NOT NULL`.
+3. Un trigger `AFTER UPDATE` imposta `profiles.password_setup_pending = true` quando la password passa da valorizzata a NULL.
+4. L'app porta l'utente a `/set-password` con la sessione appena ottenuta (e, a ogni avvio con sessione, finché il flag server è `true`): `updateUser({ password })`; il flag torna `false` quando la password è valorizzata; poi `signOut({ scope: 'others' })`.
+5. Il recovery resta invariato e copre anche gli account non confermati.
+
+**Perché il trigger intercetta V1, V2, V3 e V4 [L].** Con un trigger di audit temporaneo sono stati registrati gli UPDATE di GoTrue su `auth.users` per ogni scenario. La conferma dell'email passa da un unico UPDATE in cui `email_confirmed_at` passa da `NULL` a un valore e `confirmation_sent_at` è già valorizzato (la conferma viene emessa dopo l'INSERT). Ogni via che conferma l'email (codice, link, recovery su account non confermato) attraversa quell'UPDATE. La password dell'attaccante è nella riga dalla creazione e il `BEFORE UPDATE` la rimuove **nello stesso UPDATE**, prima che esista una sessione per l'account: lo stato "confermato con una password nota ad altri" non esiste mai. Quindi V1 (la vittima conferma), V2 (link non richiesto), V3 (polling: nessuna finestra) e V4 (il recovery su account non confermato passa dallo stesso UPDATE) sono chiusi. Prima della conferma il login è impossibile (`email_not_confirmed`), quindi non esistono sessioni preesistenti. Con la mitigazione attiva il login dell'attaccante dà `invalid_credentials` e la vittima imposta la propria password e accede.
+
+**Perché non azzera la password di altri utenti [L]**
+
+| Caso | Cosa fa GoTrue (audit) | Azzeramento |
+|---|---|---|
+| Utente creato da amministratore con `email_confirm: true` | `INSERT`, poi `UPDATE email_confirmed_at` con `confirmation_sent_at` **NULL** (nessuna email di conferma emessa) | **No** (condizione falsa); login con password riuscito |
+| Utente già confermato: login, metadati, cambio password, richiesta reset, cambio email | Aggiornamenti con `email_confirmed_at` già valorizzato | **No**; login con password riuscito |
+| Conferma amministrativa di un utente registrato con `signUp` | UPDATE con `confirmation_sent_at` valorizzato | **Sì (atteso)**: password da reimpostare col recovery |
+| Recovery su un account non confermato | Conferma l'email e crea la sessione | **Sì**, poi si imposta la nuova password |
+
+L'esclusione degli utenti creati dall'amministratore dipende dal fatto che GoTrue non emette per loro l'email di conferma: assunzione verificata in locale e coperta da test di regressione.
+
+**Come la nuova password è impostata solo da una sessione legittima [L]**
+
+- Dopo l'azzeramento l'account non ha password: il login con password dà `invalid_credentials` (nessun errore 500).
+- `updateUser({ password })` senza sessione è rifiutato.
+- Le uniche sessioni ottenibili sono quella restituita da `verifyOtp` a chi presenta codice o link (possesso della casella email) e quella del recovery.
+- Dopo la scelta della password si esegue `signOut({ scope: 'others' })`.
+- **Limite**: chi indovina l'OTP ottiene la sessione; dipende dal rate limit (**[B]**, sezione D).
+
+**Chi chiude la pagina dopo la conferma e riprende dopo [L]**
+
+- Una bandiera nei `raw_user_meta_data` scritta dal trigger `BEFORE` **non sopravvive**: GoTrue riscrive i metadata nell'UPDATE successivo (assente nel database, nella risposta di `verifyOtp` e in `getUser`). Soluzione scartata, con evidenza.
+- Soluzione adottata: colonna `profiles.password_setup_pending`, stato **del server**. Osservato: la sessione persistita viene ripristinata dopo chiusura della scheda e riavvio (anche con access token scaduto e refresh token valido); lo stato applicativo in memoria va perso; il flag letto dal server resta `true`; `updateUser({ password })` dalla sessione ripristinata riesce e il flag torna `false`.
+- **Link su un altro dispositivo**: il dispositivo B ottiene la sessione e vede il flag `true`; il dispositivo A, che ha registrato, non ha sessione; lo stesso codice su A dopo l'uso del link dà `otp_expired`; dopo la scelta della password su B, A accede con la nuova password.
+- **Sessione persa** (storage vuoto): il login con password fallisce, `updateUser` senza sessione dà `AuthSessionMissing`; "Password dimenticata" invia il recovery anche per l'account confermato senza password, la verifica dà la sessione, il flag resta `true` fino alla scelta e poi diventa `false`. Una copia della vecchia sessione risulta revocata (`refresh_token_not_found`) dopo `signOut({ scope: 'others' })`.
+- La colonna non è scrivibile dal client (`42501`) e non è leggibile da `anon`; ogni utente vede solo la propria riga. **Nota**: negli spike la colonna aveva anche un `GRANT SELECT` di colonna; la lettura deriva in ogni caso dal grant di tabella di M2 e l'utilità del grant di colonna non è stata verificata (§20, punto 2 della migration).
+
+**Atomicità, privilegi e sessioni (spike finali) [L]**
+
+- **Fail-closed**: se il trigger `AFTER` fallisce, `verifyOtp` dà HTTP 500 (`Error confirming user`), l'account resta non confermato con password invariata e flag `false`; dopo il ripristino **lo stesso codice** riesce e porta a conferma, password NULL e flag `true`. Un guasto del trigger blocca quindi le conferme invece di lasciare account senza flag: in staging va monitorato l'errore `Error confirming user` **[S]**. Il solo test di rollback con transazione annullata ha confermato lo stato finale (conferma NULL, password intatta, flag `false`) ma **non** dimostra lo stato intermedio: l'atomicità interna è provata dal caso fail-closed.
+- **Password rifiutata** (`weak_password`): flag invariato; con password valida il flag diventa `false` e il login riesce.
+- **Profilo mancante**: se il profilo è stato cancellato a mano, la conferma passa, la password è NULL e il flag non può essere impostato (`UPDATE` su 0 righe, nessun errore). **Limite reale del trigger.** Con M2 il caso non dovrebbe esistere (profilo creato atomicamente con l'utente, nessuna cancellazione per il client): l'invariante va protetta da un test (§20), senza scambiare l'assenza del profilo per un flusso riuscito.
+- **Privilegi**: `EXECUTE` è concesso a `PUBLIC` di default; lo schema `private` non ha `USAGE` per `anon` e `authenticated`, quindi le funzioni non sono raggiungibili da PostgREST. La migration revoca comunque `EXECUTE` da `PUBLIC` su entrambe le funzioni. **Misurato**: privilegi di default e funzionamento dei trigger **senza** la revoca. **Non misurato**: il funzionamento con la revoca applicata (l'ipotesi che PostgreSQL controlli `EXECUTE` sulla funzione trigger solo alla `CREATE TRIGGER` va verificata dal test (j) di §20, prima in locale e poi in staging **[S]**). Le funzioni di M2 in `private` non hanno `REVOKE EXECUTE`.
+- **Sessioni**: in locale GoTrue revoca le altre sessioni quando cambia la password (le sessioni passano da 2 a 1 e il refresh token dell'altra sessione dà 400). È un comportamento **della versione locale**, non una garanzia: è coperto da un test esplicito e `signOut({ scope: 'others' })` resta come difesa aggiuntiva. Prima della conferma non esiste alcuna sessione, quindi non ce ne sono da revocare al momento del wipe.
+
+**Trigger di M2 e creazione atomica di utente, profilo e consenso**
+
+- M2: `on_auth_user_created` (**AFTER INSERT**) → `private.handle_new_user` → `private.create_profile_for_user`: se `privacy_version` manca o non è supportata l'INSERT dell'utente fallisce (rollback atomico).
+- M3 aggiunge due trigger **separati** su `auth.users` (`BEFORE UPDATE` per il wipe, `AFTER UPDATE` per il flag), con funzioni proprie, che non scattano sull'INSERT. **Trigger e funzioni di M2 non vengono modificati**; `profiles` riceve solo una colonna additiva. La password casuale monouso non tocca i metadata, quindi il consenso privacy resta invariato.
+- Test: i test di consenso esistenti (pgTAP e integrazione) restano verdi; un nuovo test pgTAP verifica che esistano tutti i trigger con evento e momento corretti (M2: AFTER INSERT; M3: BEFORE UPDATE e AFTER UPDATE).
+
+**Compatibilità con aggiornamenti di GoTrue e Supabase (rischi)**
+
+1. GoTrue potrebbe cambiare le colonne aggiornate alla conferma (ad esempio azzerare `confirmation_sent_at` prima) o non usare più `UPDATE auth.users`: la protezione cadrebbe **in silenzio**.
+2. Nuovi percorsi di conferma (telefono, provider esterni) non sono coperti.
+3. Gli aggiornamenti dello schema `auth` gestiti da Supabase potrebbero alterare trigger personalizzati.
+
+Mitigazioni: test di integrazione che riproducono V1, V2, V3 e V4 in CI con versione della CLI pinnata e **falliscono se la protezione sparisce**; riesecuzione a ogni aggiornamento di `supabase`; in staging, smoke periodico che ripete l'attacco **[S]**.
+
+**Verifica in hosting e alternativa**
+
+- **[S][B]** In staging: (i) il trigger `BEFORE UPDATE` su `auth.users` è creabile con la migration e resta attivo dopo gli aggiornamenti della piattaforma; (ii) V1, V2, V3 e V4 danno lo stesso esito che in locale. Il solo test locale **non** basta a dichiarare la compatibilità con l'hosting. In staging va verificato anche il trigger `AFTER UPDATE` (installabile, `SECURITY DEFINER` con scrittura su `public.profiles`) e il comportamento fail-closed. **La beta resta bloccata finché questa verifica non è eseguita e documentata.**
+- **Inviti amministrativi, provider esterni, telefono**: **fuori perimetro M3**. `inviteUserByEmail` crea l'utente con `encrypted_password` a stringa vuota (non NULL) e `confirmation_sent_at` valorizzato; l'accettazione dell'invito e il linking OAuth su un'email non confermata **non sono stati provati** e il trigger non li copre per costruzione: vanno rivalutati prima di introdurli.
+- **Alternativa** se il trigger non è utilizzabile o affidabile: **Edge Function di registrazione** con `service_role` e `enable_signup = false` (la `signUp` diretta con chiave pubblica non è più possibile), creazione utente senza password con API di amministrazione, invio OTP con SMTP e template propri, rate limit proprio. Costi: Edge Function anticipate (da M9), gestione dei segreti, più superficie di attacco. **Non implementata; decisione da prendere prima della beta.**
+- **Alternative scartate dopo gli spike [L]**: registrazione con `signInWithOtp` (non impedisce la `signUp` diretta dell'attaccante; per email già confermate invia un link di accesso); solo passo di scelta password lato client (non copre pagina chiusa, link su altro dispositivo né la finestra V3); cancellazione periodica degli account non confermati (riduce la finestra, non la chiude); hook `before_user_created` (agisce solo alla creazione).
+
+#### B. Composable di form `useZodForm` (al posto di `@tanstack/vue-form`)
+
+- **Contratto**: riceve uno schema zod; espone valori reattivi, errori per campo, `touched`, `field(name)` con `id`, `name`, `aria-invalid`, `aria-describedby` (verso un elemento `role="alert"`), `onInput`, `onBlur`, e `handleSubmit(cb)` che valida tutto, **mette il focus sul primo campo non valido**, passa a `cb` i dati **normalizzati** da `schema.parse` (trim, minuscole), impedisce il doppio invio e imposta `submitting`/`aria-busy`; più `setFieldError` e `setFormError` per gli errori del server.
+- **Verifica**: `@tanstack/form-core` accetta lo schema zod 4 ma **non applica le trasformazioni** (serve comunque `schema.parse`) [L]; per 5 form piccoli non è indispensabile. Si rivaluta in M5 con il form delle scadenze. L'adeguatezza del composable (focus, trasformazioni, doppio invio, axe in jsdom) è **criterio di accettazione di M3** e sarà verificata dai test unitari e dagli e2e con `@axe-core/playwright` (il contrasto non è calcolabile in jsdom).
+
+#### C. Inizializzazione e ripristino della sessione
+
+- Il costruttore di `GoTrueClient` avvia `initialize()` da solo; l'opzione `skipAutoInitialize` è raggiungibile da `createClient`; `initialize()` è idempotente; `getSession()` attende l'inizializzazione; `onAuthStateChange` emette `INITIAL_SESSION` per ogni sottoscrizione, anche tardiva [L]. L'ordine degli eventi **non è fisso**: lo store deve essere idempotente e considerare `ready` il primo `INITIAL_SESSION`.
+- Refresh token invalido → `SIGNED_OUT` e storage ripulito; **JSON corrotto nello storage → il valore resta** (serve `sanitizeStoredSession`) [L].
+- **Avvio offline con access token scaduto**: l'inizializzazione termina con `INITIAL_SESSION(null)` pur conservando la sessione nello storage e **quell'istanza di client resta bloccata** anche quando la rete torna; un client nuovo sullo stesso storage la recupera. Con inizializzazione differita (`deferInitialization`, additiva, default invariato) e `initialize()` chiamato solo con rete presente: un solo refresh, nessun blocco [L].
+- `useSupabase()` dentro uno store Pinia funziona fuori dai componenti solo se `app.use(pinia)` è stato chiamato; funziona in `app.runWithContext` [L].
+- **Sequenza di avvio decisa**: (1) env, piattaforma, `sanitizeStoredSession`, client con `deferInitialization`; (2) `createApp`, `provide` di platform e client, `app.use(pinia)`; (3) store creato in `app.runWithContext` (una sola sottoscrizione a `onAuthStateChange`); (4) se online `initialize()`, altrimenti attesa dell'evento "online"; (5) l'app si monta subito e mostra la schermata di caricamento finché `auth.ready` è falso; (6) la guardia del router attende `auth.ready`; (7) `ready` al primo `INITIAL_SESSION`; (8) se l'inizializzazione fallisce con rete presente (client bloccato) la UI mostra "Impossibile verificare la sessione: ricarica la pagina". **Nessun `reload()` in `AppLifecycle` in M3.**
+- **Logout**: `signOut({ scope: 'local' })` offline restituisce un errore di rete ma rimuove la sessione locale ed emette `SIGNED_OUT`; con un refresh in volo il risultato finale è storage vuoto (lo store usa `signingOut` per lo stato transitorio); più `getSession()` paralleli con token scaduto producono un solo refresh [L]. **Limite**: dopo un logout offline la sessione resta valida sul server.
+
+#### D. Rischi residui e gate
+
+| Rischio | Evidenza | Mitigazione in M3 | Residuo | In M3 | Gate prima della beta |
+|---|---|---|---|---|---|
+| **Enumerazione delle email** | Signup su email confermata → 422 `user_already_exists`; login e reset hanno tempi di risposta diversi [L] | Messaggi e schermate neutri nella UI. **Questo non elimina l'enumerazione tramite API diretta** | L'API distingue i casi per stato e tempo | **Accettabile, documentato** | **[B]** Rate limit e CAPTCHA su registrazione, login, reset; decidere se tollerare il 422 o usare la Edge Function |
+| **Logout offline** | Sessione server ancora valida [L] | Storage locale sempre ripulito; la UI segnala la mancata revoca | Refresh token copiato valido fino alla scadenza | **Accettabile, documentato** | "Esci da tutti i dispositivi" (M11), consigliato, non bloccante |
+| **Rate limiting OTP e login** | In locale non c'è limite per IP: centinaia di tentativi errati senza 429 (~430 richieste/s) [L] | OTP a 8 cifre, scadenza 600 s, trigger anti pre-hijacking, test di caratterizzazione | Brute force non limitato in locale | Accettabile **solo in locale** | **[B] Verificare in hosting il rate limit su OTP e login (prova che ottenga 429)** |
+| **Lunghezza OTP effettiva** | `otp_length = 8` verificato in locale [L] | Costante unica nell'app | In hosting potrebbe essere diversa | – | **[B] Verificare in hosting la lunghezza OTP** |
+| **Anti-abuso (registrazione, login, recupero)** | Nessun CAPTCHA in locale | Nessuno in M3 | Tentativi automatizzati | Accettabile solo in locale | **[B] Protezione anti-abuso incluso CAPTCHA (Turnstile)** |
+| **Trigger anti pre-hijacking in hosting** | Verificato solo in locale [L] | Test di regressione V1–V4 in CI | Trigger non creabile/affidabile in hosting | – | **[B][S] Verifica in staging oppure alternativa Edge Function** |
+
+**Condizioni bloccanti prima della beta ([B])**: (1) rate limiting effettivo su OTP e login verificato in hosting; (2) lunghezza OTP configurata in hosting; (3) protezioni anti-abuso (CAPTCHA) per registrazione, login e recupero; (4) **entrambi i trigger** (`BEFORE UPDATE` e `AFTER UPDATE` su `auth.users`) verificati in staging, inclusi la **persistenza del flag** `password_setup_pending` (chiusura scheda, riavvio, altro dispositivo), il comportamento **fail-closed** (§23.12 A) e il funzionamento con `REVOKE EXECUTE … FROM PUBLIC` applicato, **oppure** alternativa architetturale attivata; la **revoca delle sessioni** al cambio password non va considerata garantita in hosting senza verifica (resta `signOut({ scope: 'others' })`). Impostazioni di produzione da replicare e verificare: `max_frequency` 60 s, `otp_expiry` 600, `otp_length` 8, password minima 10.
+
+#### E. Prospetto di stato per comportamento
+
+Stato **alla v0.5**: nessun test automatico di M3 è stato scritto o eseguito; le evidenze locali vengono da spike manuali su uno stack temporaneo (ora eliminato). **"Da implementare" significa non ancora eseguito.**
+
+| Comportamento | Evidenza negli spike locali [L] | Test automatico | Verifica hosted |
+|---|---|---|---|
+| Azzeramento password alla prima conferma (V1–V4) | Osservato, con mutazioni (nessun trigger, condizione invertita, mai vera, troppo larga) | Da implementare (§20 (a), (i)) | **[S][B]** |
+| Admin-created, utenti confermati ed email change non azzerati | Osservato | Da implementare (regressione, §20) | **[S]** |
+| Flag `true` dopo la conferma e `false` dopo la scelta; persistenza (chiusura scheda, riavvio, access token scaduto, altro dispositivo, sessione persa con recovery) | Osservato | Da implementare (§20 (b), criterio 14) | **[S][B]** persistenza del flag |
+| Conferma fail-closed se il trigger `AFTER` fallisce; codice riutilizzabile dopo il ripristino | Osservato (caso fail-closed); il rollback ha confermato solo lo stato finale | Da implementare (§20 (c), criterio 16) | **[S][B]** |
+| Password rifiutata (`weak_password`) lascia il flag invariato | Osservato | Da implementare (§20 (d)) | – |
+| Profilo mancante: flag non impostabile, nessun errore | Osservato (limite del trigger) | Da implementare: deve far fallire il flusso (§20 (e), criterio 18) | – |
+| Flag non scrivibile dal client, `anon` senza accesso, solo propria riga | Osservato (con grant di colonna aggiuntivo) | Da implementare (§20 (f), criterio 15) | **[S]** grant effettivi |
+| `REVOKE EXECUTE … FROM PUBLIC` e funzionamento dei trigger con la revoca | **Non misurato** (privilegi di default misurati; trigger funzionanti solo senza revoca). Ipotesi PostgreSQL non verificata | Da implementare (§20 (g), (j)) | **[S][B]** |
+| Revoca delle altre sessioni al cambio password | Osservato in locale; **dipende dalla versione di GoTrue** | Da implementare (§20 (h), criterio 19) | **[S][B]** non garantita senza verifica |
+| Rate limiting OTP e login, lunghezza OTP, CAPTCHA | Assente in locale (nessun 429); `otp_length = 8` verificato in locale | Nessun test pretende un 429 in locale | **[B]** |
+| Inviti amministrativi, provider esterni, telefono | Non provati (inviti: solo creazione) | Nessuno | Fuori perimetro M3 |

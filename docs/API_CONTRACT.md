@@ -31,6 +31,7 @@ Regole per chi scrive codice client:
 | `recurrence_rules` | proprie           | `item_id, interval_unit, interval_count, anchor_date`                  | `interval_unit, interval_count, anchor_date`                                                      | proprie |
 | `item_completions` | proprie           | —                                                                      | —                                                                                                 | —       |
 
+- **Pianificata in M3 (non ancora presente nello schema)**: `profiles.password_setup_pending boolean not null default false`, **in sola lettura** per `authenticated` (la lettura deriva dal grant `SELECT` sull'intera tabella già concesso da M2; nessun `INSERT`/`UPDATE` sulla colonna per i client; `anon` nessun accesso). Indica che l'utente ha confermato l'email ma non ha ancora scelto la password.
 - `owner_id` non è mai inseribile né aggiornabile dal client: lo valorizza `default auth.uid()`.
 - `recurrence_rules` e `item_completions` usano la FK composta `(item_id, owner_id) →
 life_items(id, owner_id)`: il database garantisce che il figlio appartenga allo stesso utente.
@@ -54,6 +55,19 @@ nei metadata di `signUp`:
 - `privacy_accepted_at` è `now()` lato database; qualunque timestamp inviato dal client è ignorato.
 - Le versioni supportate sono in `private.supported_privacy_versions()`; per aggiungerne una si
   ridefinisce la funzione con una nuova migration.
+
+## Autenticazione (M3 — pianificata, NON ancora implementata)
+
+Questa sezione descrive il comportamento previsto dalla specifica v0.5 (§23.12); non è ancora disponibile nel codice.
+
+- Codice di verifica email: **8 cifre**, validità **600 s**; in alternativa link con `token_hash` (PKCE).
+- Registrazione: `signUp` con password casuale monouso (mai mostrata) e `privacy_version` nei metadata. Un trigger `BEFORE UPDATE` su `auth.users` annulla la password alla prima conferma dell'email; la password si sceglie dopo la conferma con `updateUser({ password })`.
+- La colonna `profiles.password_setup_pending` è mantenuta da un trigger `AFTER UPDATE` su `auth.users`: `true` quando la password viene azzerata, `false` quando torna valorizzata. Il client la legge all'avvio e, se `true`, porta l'utente a `/set-password`; non può scriverla.
+- Un account creato da amministratore con email già confermata o già confermato non è toccato dal trigger.
+- Se il trigger `AFTER` fallisce, la conferma fallisce in blocco (HTTP 500 `Error confirming user`, account non confermato, stesso codice riutilizzabile dopo il ripristino).
+- Inviti amministrativi, provider esterni e telefono sono **fuori perimetro** M3.
+- Le risposte dell'API Auth possono distinguere email già registrate (es. 422 `user_already_exists`): la UI è neutra ma l'API no (rischio residuo documentato, gate beta).
+- **Verificato solo sullo stack locale.** Prima della beta sono obbligatori: verifica in staging Supabase hosted di entrambi i trigger (`BEFORE` e `AFTER UPDATE` su `auth.users`), della persistenza del flag, del comportamento fail-closed e del funzionamento con `REVOKE EXECUTE … FROM PUBLIC`, rate limiting, lunghezza OTP e CAPTCHA.
 
 ## Errori
 
