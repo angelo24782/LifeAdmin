@@ -1691,3 +1691,17 @@ Stato **dopo l'implementazione della migration**: i test elencati sono stati scr
 | Revoca delle altre sessioni al cambio password | Osservato in locale; **dipende dalla versione di GoTrue** | Implementato ed eseguito in locale (§20 (h), criterio 19) | **[S][B]** non garantita senza verifica |
 | Rate limiting OTP e login, lunghezza OTP, CAPTCHA | Assente in locale (nessun 429); `otp_length = 8` verificato in locale | Nessun test pretende un 429 in locale | **[B]** |
 | Inviti amministrativi, provider esterni, telefono | Non provati (inviti: solo creazione) | Nessuno | Fuori perimetro M3 |
+
+#### F. Strumento di verifica remota A3-0: stato e limiti
+
+Per i punti **[S]** è stato preparato un **client HTTP rigido** (passi B1 identità del progetto, B2 canarino `select 1`, B3 contesto del ruolo e RLS sulle sei tabelle `auth.*`) con la relativa suite di test. Lo strumento è **fuori dal repository** (archivio locale con manifest SHA-256) e non fa parte del codice del prodotto. La tabella separa ciò che è stato esercitato contro un mock, ciò che sul sistema reale non è stato verificato e ciò che i risultati attestano.
+
+| Ambito | Stato |
+|---|---|
+| **Esercitato contro il mock** (HTTP su loopback, guard di rete, token fittizio, nessun SQL) | Il comportamento **del client**: rifiuto locale di valori non ammessi per base, token, variabili d'ambiente, metodo, percorso e tipo degli argomenti; timeout e risposte incomplete; Content-Type; decodifica UTF-8 rigorosa; classificazione degli esiti (PASS, FAIL, INCONCLUDENTE) e codici di uscita. Sono controlli applicati dal client prima o dopo la richiesta: **non** sono proprietà di sicurezza dimostrate sull'endpoint reale. |
+| **Non verificato sul sistema reale** | TLS e catena di certificati; autenticazione effettiva, validità e scope del token; autorizzazioni; ruolo PostgreSQL con cui l'endpoint esegue l'SQL; comportamento di `database/query/read-only` (SQL arbitrario, istruzioni multiple, scritture indirette, funzioni SECURITY DEFINER, RLS); formato reale di Content-Type e corpo; rate limit; console Windows e segnali del sistema operativo. |
+| **B1, B2, B3 sull'endpoint reale** | **Non eseguiti e non autorizzati.** Richiedono un'approvazione esplicita. |
+| **Punti [S]** | **Restano non verificati.** La tabella E non cambia. |
+| **Che cosa attestano i risultati** | La suite ha dato due esecuzioni consecutive da **512/512** casi conformi: attesta la conformità del client ai propri test, eseguiti contro il mock, **non** la sicurezza complessiva dell'endpoint né del progetto. Dipende da Node 24.20.0 e undici; la sensibilità dei test di regressione su stato non accettato e su abort non è dimostrata con mutazioni. |
+
+**I risultati locali non costituiscono una certificazione di sicurezza dell'endpoint reale** e non permettono di considerare soddisfatti i punti **[S]**.

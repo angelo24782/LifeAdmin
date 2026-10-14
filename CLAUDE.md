@@ -64,6 +64,8 @@ Previsti ma **non ancora installati**: `@axe-core/playwright` (dev, M3), Capacit
 - `supabase db query --local` esegue UNA istruzione per volta e per il DDL non restituisce JSON; in pgTAP `postgres` non può assumere `supabase_auth_admin` né concedere privilegi su `auth.users`: il firing dei trigger con GoTrue reale si prova solo nei test di integrazione.
 - I test pgTAP non devono contare righe globali (restringere ai propri UUID): i test di integrazione possono lasciare utenti. Il cleanup degli integration test va in `try/finally`.
 - Non dichiarare "verificato" ciò che è stato provato solo in locale.
+- Dal lavoro sul client di verifica A3-0 (indicazioni di questo caso, da valutare altrove e non regole generali): nel client che costruisce richieste da argomenti è risultato utile controllare il tipo con `typeof` prima di regex e coercioni e decodificare le risposte con UTF-8 rigoroso (`TextDecoder` con `fatal: true`); in questo caso è risultato utile anche testare le funzioni interne chiamate direttamente, e non solo il punto d'ingresso.
+- Specifico di A3-0: il client rigido e la sua suite sono fuori dal repository (archivio locale con manifest SHA-256) e verificati solo contro un mock; B1/B2/B3 sull'endpoint reale non sono né eseguiti né autorizzati; non certificano la sicurezza dell'endpoint `read-only` (§23.12 F).
 
 ## Architettura: regole vincolanti
 
