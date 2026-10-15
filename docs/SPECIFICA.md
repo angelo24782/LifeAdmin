@@ -1656,7 +1656,7 @@ Mitigazioni: test di integrazione che riproducono V1, V2, V3 e V4 in CI con vers
 
 - Il costruttore di `GoTrueClient` avvia `initialize()` da solo; l'opzione `skipAutoInitialize` è raggiungibile da `createClient`; `initialize()` è idempotente; `getSession()` attende l'inizializzazione; `onAuthStateChange` emette `INITIAL_SESSION` per ogni sottoscrizione, anche tardiva [L]. L'ordine degli eventi **non è fisso**: lo store deve essere idempotente e considerare `ready` il primo `INITIAL_SESSION`.
 - Refresh token invalido → `SIGNED_OUT` e storage ripulito; **JSON corrotto nello storage → il valore resta** (serve `sanitizeStoredSession`) [L].
-- **Avvio offline con access token scaduto**: l'inizializzazione termina con `INITIAL_SESSION(null)` pur conservando la sessione nello storage e **quell'istanza di client resta bloccata** anche quando la rete torna; un client nuovo sullo stesso storage la recupera. Con inizializzazione differita (`deferInitialization`, additiva, default invariato) e `initialize()` chiamato solo con rete presente: un solo refresh, nessun blocco [L].
+- **Avvio offline con access token scaduto**: l'inizializzazione termina con `INITIAL_SESSION(null)` pur conservando la sessione nello storage e **quell'istanza di client resta bloccata** anche quando la rete torna; un client nuovo sullo stesso storage la recupera. Con inizializzazione differita (`deferInitialization`, additiva, default invariato) e `initialize()` chiamato solo con rete presente: un solo refresh, nessun blocco [L]. **Nota (v0.5, §23.12 G.4):** una caratterizzazione simulata successiva mostra una ripresa della stessa istanza dopo i 60 s di cooldown e un blocco entro ~1 s dal fallimento; la differenza con questa frase è forse solo temporale (ipotesi [V]) e non è risolta. Questa frase non è stata modificata.
 - `useSupabase()` dentro uno store Pinia funziona fuori dai componenti solo se `app.use(pinia)` è stato chiamato; funziona in `app.runWithContext` [L].
 - **Sequenza di avvio decisa**: (1) env, piattaforma, `sanitizeStoredSession`, client con `deferInitialization`; (2) `createApp`, `provide` di platform e client, `app.use(pinia)`; (3) store creato in `app.runWithContext` (una sola sottoscrizione a `onAuthStateChange`); (4) se online `initialize()`, altrimenti attesa dell'evento "online"; (5) l'app si monta subito e mostra la schermata di caricamento finché `auth.ready` è falso; (6) la guardia del router attende `auth.ready`; (7) `ready` al primo `INITIAL_SESSION`; (8) se l'inizializzazione fallisce con rete presente (client bloccato) la UI mostra "Impossibile verificare la sessione: ricarica la pagina". **Nessun `reload()` in `AppLifecycle` in M3.**
 - **Logout**: `signOut({ scope: 'local' })` offline restituisce un errore di rete ma rimuove la sessione locale ed emette `SIGNED_OUT`; con un refresh in volo il risultato finale è storage vuoto (lo store usa `signingOut` per lo stato transitorio); più `getSession()` paralleli con token scaduto producono un solo refresh [L]. **Limite**: dopo un logout offline la sessione resta valida sul server.
@@ -1721,3 +1721,214 @@ I dati numerici qui sotto sono **risultati riportati nelle verifiche precedenti 
 **Lezioni sperimentali** (emerse in questo caso, da rivalutare altrove; non costituiscono una certificazione): controllare il tipo degli argomenti prima di espressioni regolari e coercioni; decodificare le risposte con UTF-8 rigoroso; testare anche le funzioni interne chiamate direttamente.
 
 **I risultati locali non costituiscono una certificazione di sicurezza dell'endpoint reale** e non permettono di considerare soddisfatti i punti **[S]**. La tabella E non cambia.
+
+#### G. Evidenze di caratterizzazione e proposta di contratto dello store di autenticazione
+
+**Stato.** Sezione **documentale**: nessuno store, servizio o guard è implementato e nulla di quanto segue autorizza il codice. Le tabelle riportano ciò che è stato **osservato** nei test di caratterizzazione di `@supabase/auth-js` **2.117.3** e separano ciò che è stato visto con un server reale da ciò che è stato visto solo con risposte simulate. **Non sono un contratto della libreria né dello store**: se un aggiornamento di auth-js o della CLI cambia questi valori, vanno rieseguiti e riletti. I valori numerici sono quelli fissati nei test; i test non mostrano mai i token. In ogni sottosezione i **fatti osservati** sono tenuti separati dalle **interpretazioni** (etichetta [D]) e dalle **decisioni** ([AD] o [P]).
+
+**Etichette di questa sezione**
+
+| Etichetta | Significato |
+|---|---|
+| **[LR]** | **Osservato** con GoTrue e PostgREST **locali reali** (CLI 2.120, solo loopback): `tests/integration/auth-events.characterization.int.test.ts` e `tests/integration/auth-errors.characterization.int.test.ts` |
+| **[SIM]** | **Osservato solo con risposte simulate** (`fetch` sostituito, storage in memoria con guasti iniettati, tempo simulato): `tests/characterization/auth-js-runtime-storage.test.ts` e `tests/characterization/auth-js-errors.test.ts`. **Non è una garanzia generale della libreria**, né un comportamento visto su un server o su uno storage reali. |
+| **[D]** | **Deduzione**: interpretazione ricavata da osservazioni o dal codice di auth-js, **non osservata direttamente** |
+| **[V]** | **Da verificare**: non caratterizzato |
+| **[P]** | Decisione di progetto **proposta**, non approvata |
+| **[AD]** | **Approvata come base documentale** dal responsabile del progetto (2026-10-15). **Non autorizza l'implementazione**: ogni dettaglio operativo non elencato come [AD] resta [P] |
+
+L'etichetta [L] di §23.12 A–C indica gli spike manuali locali; **[LR]** indica i test automatici di questa sezione. Decisioni già approvate e scritte altrove: §23.12 C (ordine degli eventi non fisso, `ready` al primo `INITIAL_SESSION`, nessun `reload()`, `signingOut`) e criteri 2, 7, 8, 9 e 18 di §20.
+
+##### G.1 Eventi: ordine e significato
+
+**Fatti osservati [LR].** Con il client creato e la sottoscrizione a `onAuthStateChange` fatta **subito dopo la creazione** (prima che l'inizializzazione termini):
+
+| Scenario | Eventi osservati, in ordine | Richieste | Note |
+|---|---|---|---|
+| T1 `signInWithPassword` | `SIGNED_IN` (sessione dell'utente atteso), poi la promessa si risolve | 1 | Evento **prima** della risoluzione |
+| T1 `verifyOtp` con codice e con link (`type: signup`) | come sopra | 1 | idem |
+| T3 `refreshSession()` | `TOKEN_REFRESHED`, poi la promessa si risolve | 1 | Refresh token ruotato |
+| T3 `getSession()` con access token scaduto | `TOKEN_REFRESHED`, poi la promessa si risolve | 1 | Refresh token ruotato |
+| T3 rinnovo automatico, con token entro il margine | `TOKEN_REFRESHED` | 1 | Il tick di 30 s è fatto scattare con `setInterval` **simulato**; richieste e server restano reali |
+| **T4 avvio con sessione salvata, access token valido** | `SIGNED_IN`, `initialize()` si risolve, `INITIAL_SESSION` (con sessione) | **0** | **`SIGNED_IN` senza alcun flusso dell'app e senza richieste al server** |
+| **T4 avvio con sessione salvata, access token scaduto** | `TOKEN_REFRESHED`, `initialize()` si risolve, `INITIAL_SESSION` (con sessione) | 1 | `INITIAL_SESSION` **per ultimo** |
+| T9 `signOut({scope:'local'})` con un refresh trattenuto | `TOKEN_REFRESHED`, `getSession()` si risolve con sessione, `SIGNED_OUT`, `signOut()` si risolve; storage vuoto | 2 | Il `signOut` attende il refresh in corso |
+
+**Interpretazioni [D].**
+- `SIGNED_IN` all'avvio segnala il **ripristino della sessione salvata**, non un accesso dell'utente: con 0 richieste il server non è stato interrogato. Vale lo stesso per `INITIAL_SESSION` con sessione e per `getSession()`, che descrivono lo stato **locale** (S11 di `auth-errors.characterization` [LR]: `getSession()` restituisce una sessione con il refresh token cancellato).
+- `TOKEN_REFRESHED` segue una risposta di refresh riuscita. I rifiuti osservati con sessione o utente assenti (S8, S10 [LR]) indicano che il server rifiuta il refresh in quei casi: un refresh riuscito è quindi un'evidenza **puntuale** e forte. L'evento da solo, però, non permette allo store di sapere **quando** è avvenuto il refresh né di distinguerlo dal ripristino all'avvio (a T4 precede `INITIAL_SESSION`).
+- La regola di G.6 di **non promuovere** su `TOKEN_REFRESHED` è una **scelta prudenziale approvata [AD]**: **non** è una conclusione obbligata dai test.
+
+**Da verificare [V].** Se le sottoscrizioni **tardive** ricevano, oltre a `INITIAL_SESSION` (§23.12 C [L]), anche gli eventi che precedono l'inizio dell'osservazione.
+
+##### G.2 Errori dello storage
+
+**Fatti osservati [SIM].** Lo storage di prova è in memoria e **rifiuta la promessa** (non lancia in modo sincrono):
+
+| Scenario | Eventi | Errore | Richieste | Esito osservato |
+|---|---|---|---|---|
+| T6a: lettura fallita all'avvio, con una sessione salvata | **Nessuno**, nemmeno `INITIAL_SESSION` (26 s simulati) | `initialize()` risolve **senza errore** | 0 | `getSession()` e `getUser()` **lanciano** l'eccezione invece di restituire `{ error }`. auth-js lascia **2 rifiuti di promessa non gestiti** (`unhandledRejection`), con stack che passa da `_emitInitialSession`. |
+| T6b: scrittura fallita al login | **Nessuno** (nessun `SIGNED_IN`) | `signInWithPassword` **lancia** | 1 | La richiesta di login è stata fatta; la chiave non c'è; `getSession()` dopo: nessuna sessione, nessun errore |
+| T6c: rimozione fallita al logout | **Nessuno** (nessun `SIGNED_OUT`) | `signOut` **lancia** | 1 | La richiesta di logout è stata intercettata (risposta simulata HTTP 204: il logout lato mock riesce); la chiave **resta**; `getSession()` dopo **restituisce ancora la sessione** |
+
+**Interpretazioni [D].**
+- Con uno storage che fallisce in lettura lo stato `unknown` può **non finire mai** per cause diverse da rete e server.
+- Dopo un `signOut` fallito la sessione locale resta viva; non è stato osservato se il server l'abbia revocata (la risposta simulata era `204`, che non rappresenta lo stato reale del server): stato locale e stato del server possono divergere.
+
+**Da verificare [V].** `localStorage` del browser e Keychain/Keystore reali in errore (quota piena, modalità privata, blocco del dispositivo); se i rifiuti non gestiti compaiano allo stesso modo in un browser.
+
+##### G.3 Refresh a client avviato e `signOut` sospeso
+
+**Rinnovo automatico fallito, client già avviato [SIM]** (T5, risposta simulata sul solo endpoint di refresh):
+
+| Risposta del refresh | Eventi | Chiave | Richieste |
+|---|---|---|---|
+| Rete assente | nessuno | resta | 8 (in 90 s simulati) |
+| HTTP 500 | nessuno | resta | 8 |
+| HTTP 429 | `SIGNED_OUT` | **rimossa** | 1 |
+| 400 `refresh_token_not_found` | `SIGNED_OUT` | rimossa | 1 |
+| 401 senza corpo | `SIGNED_OUT` | rimossa | 1 |
+
+**[D]** `SIGNED_OUT` da solo **non prova una revoca lato server**: un 429 sul refresh cancella la sessione locale (coerente con S5 e S12 di `auth-js-errors` [SIM]). **[V]** Il 429 reale non è osservabile in locale (nessun limite di richieste).
+
+**`signOut({scope:'local'})` sospeso [SIM]** (T8; la richiesta sospesa è una promessa che il test rilascia dopo 60 s simulati; lo stub riconosce la richiesta per metodo **e** percorso):
+
+| Cosa è sospeso | Richiesta intercettata e condizione applicata | Fatto osservato |
+|---|---|---|
+| **La richiesta di logout** | `POST /auth/v1/logout?scope=local`: promessa sospesa; dopo il rilascio, risposta HTTP 204 | `signOut` **in sospeso** a 0, 5, 30 e 60 s simulati; **nessun evento**; chiave **presente**; 1 richiesta. Dopo il rilascio: `SIGNED_OUT`, chiave rimossa, `signOut` si risolve. |
+| **Un refresh in corso** (`getSession()` con token scaduto) | `POST /auth/v1/token?grant_type=refresh_token`: promessa sospesa; dopo il rilascio, risposta 200 con una sessione | `signOut` **in sospeso** a 5, 30 e 60 s simulati; **nessun evento**; chiave presente; 1 richiesta. Dopo il rilascio: `TOKEN_REFRESHED`, poi parte la richiesta di logout (HTTP 204 simulato), poi `SIGNED_OUT`; chiave rimossa; 2 richieste in tutto. |
+
+**Interpretazioni [D].**
+- Con la richiesta di logout sospesa la sessione locale **non viene rimossa** e `SIGNED_OUT` **non viene emesso** finché la richiesta non termina; è coerente con il codice di auth-js, che attende `admin.signOut` prima di rimuovere la sessione. Con il refresh sospeso la richiesta di logout parte solo dopo la fine del refresh.
+- I tempi di 0, 5, 30 e 60 s sono **tempo simulato** e coincidono con i checkpoint dei test: non sono soglie di auth-js.
+- Il caso della **rete assente sul logout** è diverso: §23.12 C [L] riporta errore di rete, sessione locale rimossa ed emissione di `SIGNED_OUT`. Non è coperto dai test simulati di questa sezione **[V]**.
+
+**Nota di provenienza.** Una prima versione di T8 usava uno stub che non riconosceva la richiesta di logout (la trattava come rete assente): i valori qui riportati sono quelli ottenuti dopo la correzione del riconoscimento.
+
+Con un server reale è stata vista **[LR]** solo la variante in cui il refresh viene poi completato (T9, G.1). **[V]** Non è stato caratterizzato un `signOut` che si blocca per altre cause (storage, rete reale senza timeout, schede multiple), né il tempo che una richiesta di logout reale impiega prima di fallire.
+
+##### G.4 Cooldown e recupero dopo un avvio fallito: limiti
+
+**Fatti osservati [SIM]** (T7: avvio con access token scaduto e rete assente, poi rete ripristinata nel mock; tempi in **secondi simulati** dal fallimento):
+
+| Istante | Chiamata | Esito |
+|---|---|---|
+| ~0–1 s | `getUser()`, `getSession()` (rete assente, poi ripristinata) | `AuthRetryableFetchError` (status 0) con **0 richieste**, anche con rete ripristinata |
+| ~63 s | `getUser()` | **1 richiesta** (`GET /auth/v1/user`), riesce. Non è stato fatto alcun refresh e il mock ha accettato l'access token scaduto. |
+| ~63 s | `getSession()` | restituisce la sessione con **0 richieste** (meccanismo non isolato) |
+
+**Limiti.**
+- La caratterizzazione è **simulata**: il cooldown di 60 s e il recupero dopo i 60 s non sono stati verificati con GoTrue reale **[V]**. Con un server reale ci si aspetta che un access token scaduto sia rifiutato **[D]**.
+- **Differenza con §23.12 C [L]** ("quell'istanza di client resta bloccata anche quando la rete torna"). **Ipotesi [V]:** lo spike [L] può essere stato eseguito entro i 60 s dal fallimento, finestra in cui anche T7 mostra il blocco; la differenza potrebbe quindi essere solo temporale. Non verificato: la frase di §23.12 C **non è stata modificata** e le due affermazioni non sono riconciliate.
+- Non è provato che "ricarica la pagina" sia l'unico rimedio, né che una verifica manuale riesca entro il cooldown (non parte alcuna richiesta) **[SIM]**.
+
+##### G.5 Login con sessione creata dal server ma non salvata
+
+**Fatto osservato [SIM].** T6b: la richiesta di login ha avuto esito positivo (1 richiesta, sessione nella risposta), ma la scrittura nello storage è fallita; `signInWithPassword` ha **lanciato**, nessun `SIGNED_IN`, nessuna sessione locale.
+
+**Deduzioni [D]**, non osservate con un server reale:
+- Esiste una sessione **sul server** (con refresh token) che il client non possiede e non può revocare, valida fino a scadenza o revoca altrove.
+- Un nuovo tentativo di accesso ne crea un'altra.
+- Un client privo di `try/catch` lascerebbe uno stato indefinito (nessun evento, eccezione non gestita).
+
+**[V]** Nessuna verifica con GoTrue reale. Regola adottata: G.8.
+
+##### G.6 Stati pubblici e accesso **[AD]**
+
+Approvazione come **base documentale** (2026-10-15); i nomi dei campi e dei motivi sono [P].
+
+**Evidenza.** *Locale*: sessione in memoria di auth-js e chiave nello storage. *Del server*: una `getUser()` riuscita per lo stesso `userId`, oppure il **risultato** (non l'evento) di un flusso dell'app (accesso, verifica del codice, cambio password).
+
+| Stato pubblico | Definizione |
+|---|---|
+| `unknown` | Nessun `INITIAL_SESSION` (né `SIGNED_OUT`) ancora ricevuto. `ready` è falso. Non concede nulla. |
+| `authenticated` | Sessione presente **e** evidenza del server per lo stesso utente. |
+| `unauthenticated` | Sessione assente **e** chiave assente nello storage, letta con successo. |
+| `unverifiable` | Esiste una sessione locale, o non si può escludere che esista, ma manca una conferma del server utilizzabile (rete, errore del server, storage non utilizzabile, contraddizione, avvio incompleto). |
+
+**Regole sulle promozioni.**
+- **[AD] (O1)** `INITIAL_SESSION` con sessione e `SIGNED_IN` all'avvio **non promuovono** da soli ad `authenticated`: si avvia la verifica con `getUser()`.
+- **[AD] (O2)** `TOKEN_REFRESHED` da `unverifiable` **non promuove direttamente**: si avvia una verifica del server. È una decisione **prudenziale** (G.1), non una conclusione obbligata dei test.
+- **[AD]** Un timeout **non concede mai l'accesso né dichiara automaticamente l'utente non autenticato** (G.9).
+- **[P]** Qualunque evento o errore non caratterizzato porta a `unverifiable`, senza promuovere e senza cancellare lo storage.
+- **[P]** Ogni chiamata ad auth-js è in `try/catch` (G.2, G.8). Un risultato asincrono di una verifica partita prima di un evento più recente è scartato (contatore interno, detto "epoca").
+- **[P]** Esempi di segnali contraddittori che portano a `unverifiable`: errore PostgREST `PGRST301/303` mentre lo stato è `authenticated`; `userId` diverso da quello dello stato senza un logout; `SIGNED_OUT` con la chiave ancora presente; `bad_jwt` o `user_not_found` a chiave presente (S8, S9 [LR]).
+
+**`accessGrant` [AD]** è un valore **separato** dallo stato di autenticazione: dice se l'utente può entrare nelle aree protette. Vale `granted` solo se **tutte** le condizioni sono vere:
+1. identità **verificata dal server** (stato `authenticated`; `storage_error` è un caso di `unverifiable`, quindi lo esclude);
+2. `profiles.password_setup_pending === false` **letto dal server** dopo l'autenticazione, per lo stesso utente;
+3. nessun gate di logout attivo (G.7);
+4. nessuno stato contraddittorio.
+
+Una sessione presente o un `getUser()` riuscito **non** sostituiscono la condizione 2. Lettura fallita, riga mancante (invariante di M2, criterio 18 di §20) o valore nullo = accesso **negato**, mai interpretato come `false`. Con `password_setup_pending === true` l'unica rotta permessa è `/set-password`.
+
+**[AD]** `startup='slow'` a **8 secondi** è un indicatore **indicativo** di avvio lento: lo stato resta `unknown` (G.9).
+**[P]** Rilettura del flag a ogni risalita ad `authenticated` da un altro stato, per non concedere accesso su un valore vecchio.
+
+##### G.7 Gate di logout **[AD]** nel principio, **[P]** nei dettagli
+
+**[AD]** Stati `idle`, `running`, `settling`; **nessuno sblocco forzato**; **nessun nuovo accesso finché il gate non è tornato `idle`**. Il gate torna `idle` **soltanto dopo aver verificato che la chiave locale sia assente**; se la verifica fallisce o la chiave è ancora presente, l'accesso resta negato e il gate resta chiuso. **[AD]** Il pulsante **«Riprova disconnessione»** è un nuovo tentativo esplicito di `signOut`, non uno sblocco.
+
+**[P] Dettagli.**
+- `idle` → `running` quando si chiama `signOut`; → `settling` quando la promessa si risolve **o viene rifiutata**; → `idle` solo con la chiave assente.
+- Durante `running` e `settling` si applica solo `SIGNED_OUT`; `SIGNED_IN`, `TOKEN_REFRESHED`, `INITIAL_SESSION(sessione)` e `USER_UPDATED` sono registrati ma non applicati (nessuna sessione risorta, criterio 8 di §20); la verifica manuale è disabilitata.
+- Un indicatore `logoutStuck` dopo **30 s** di `running` è **indicativo** e non sblocca nulla. **[SIM]** È raggiungibile sia con una richiesta di logout sospesa (la sessione locale e la chiave restano, senza `SIGNED_OUT`, finché la richiesta non termina) sia con un `signOut` accodato dietro un refresh sospeso (G.3). **[V]** Non è noto il comportamento di una richiesta reale di logout senza timeout.
+- **[P]** (su evidenza **[SIM]**) Se la rimozione dello storage fallisce (T6c) il gate resta chiuso con la chiave presente: né accesso né disconnessione finché «Riprova disconnessione» non riesce o l'utente ricarica la pagina.
+- Logout offline: errore di rete ma chiave rimossa e `SIGNED_OUT` (§23.12 C [L]): `settling` → chiave assente → `idle`, con la revoca lato server **non confermata**.
+- **[V]** Più schede aperte durante il logout.
+
+##### G.8 Storage e accesso: gestione degli errori **[AD]**
+
+- **(O3)** Le chiamate ad auth-js sono gestite esplicitamente con `try/catch` (si gestiscono sia le eccezioni sia gli errori restituiti). Se lo storage necessario all'autenticazione non è utilizzabile, il login è **rifiutato prima di iniziare il flusso, quando possibile**; se l'errore emerge **durante** il flusso, l'utente **non è promosso** e lo stato è `unverifiable`. **Nessuna pulizia automatica della sessione remota.**
+- **(O6)** Una scrittura dello storage fallita durante l'accesso è, per l'app, un **accesso fallito**: nessuna promozione e nessuna pulizia automatica remota (G.5).
+- **(O8)** Gli **errori noti** di storage sono gestiti e **registrati senza sopprimerli**. Un rifiuto di promessa non gestito **non va classificato come errore di storage** in modo indiscriminato: la causa deve essere verificata, altrimenti è rappresentato come **errore non classificato**.
+- **[P]** Nomi dei motivi: `storage_error`, `unclassified_error`. **[P]** Il controllo preventivo dello storage ("quando possibile") non è ancora definito: va precisato prima dell'implementazione.
+
+##### G.9 Soglie di tempo all'avvio **[AD]**
+
+- **8 secondi**: indicatore di avvio lento (`startup='slow'`), **non** una decisione di autenticazione; non cambia lo stato.
+- **`T_stall`** (uscita temporale da `unknown` quando nessun evento arriva): **non è fissata**. **Prima va misurato** il tempo simulato della sequenza di tentativi di refresh (8 richieste, [SIM]) fino a `INITIAL_SESSION(null)` e vanno documentati i limiti dello storage guasto. Finora i test hanno solo fatto avanzare il tempo di 26 s senza misurare la durata effettiva.
+- Alla scadenza di qualunque soglia lo stato **non** concede accesso e **non** diventa `unauthenticated` da solo; **[P]** lo stato di arrivo sarebbe `unverifiable`.
+- **[SIM]** Esempio di caso che la giustifica: T6a, nessun evento mai (G.2). **[V]** Non è stato misurato con uno storage reale.
+
+##### G.10 Cambio password in M3 **[AD]** nel requisito, **[P]** nel punto di controllo
+
+**[AD] Requisito.** La modifica della password richiede un'**autenticazione verificata dal server** e un controllo del flusso **prima** di `updateUser()`. Il resto delle operazioni sensibili resta rinviato alle milestone che le introducono.
+
+**[P] Punto di controllo proposto** (non implementato): all'inizio della funzione di servizio che esegue il cambio password (prevista in `features/auth/service.ts`), **immediatamente prima** di `updateUser({ password })`:
+1. richiedere stato `authenticated` con evidenza del server (non `accessGrant`: in `/set-password` il flag è `true` per definizione);
+2. chiamare `getUser()` e confrontare l'`id` con quello dello stato;
+3. solo se l'esito è positivo chiamare `updateUser`; dopo il successo, rileggere il flag (deve diventare `false`) ed eseguire `signOut({ scope: 'others' })` (§23.12 A).
+
+| Esito di `getUser()` | Trattamento proposto |
+|---|---|
+| Utente corrispondente | si procede con `updateUser` |
+| `AuthSessionMissingError` con `SIGNED_OUT` e chiave assente (S6, S7 [LR]) | si interrompe; stato `unauthenticated` tramite l'evento |
+| Rete assente o JSON non valido, 5xx, 429, errore inatteso (S1, S4, S5, S12 [SIM]) | si interrompe senza chiamare `updateUser`; stato `unverifiable`; messaggio di riprova |
+| `user_not_found` o `bad_jwt` a chiave presente (S8, S9 [LR]) | si interrompe; `unverifiable` con motivo di rifiuto del server |
+| `userId` diverso | si interrompe; contraddizione |
+| Eccezione lanciata (storage, G.2) | si interrompe; `unverifiable/storage_error` o errore non classificato (G.8) |
+
+Errori di `updateUser` (per esempio `weak_password`) seguono §23.12 A. **Concorrenza [P]**: un solo cambio password alla volta; una `getUser()` già in corso si condivide solo se è partita **dopo** la richiesta del cambio. **Costo**: una `GET /auth/v1/user` in più (1 richiesta [LR]). **Limite**: tra la verifica e la scrittura la sessione può essere revocata; il controllo definitivo resta del server.
+
+##### G.11 Stato delle decisioni O1–O11 (2026-10-15)
+
+| # | Oggetto | Stato |
+|---|---|---|
+| O1 | `INITIAL_SESSION` e `SIGNED_IN` all'avvio non promuovono; verifica con `getUser()` | **Approvata [AD]** (G.6) |
+| O2 | `TOKEN_REFRESHED` da `unverifiable` non promuove | **Approvata [AD]** come regola prudenziale (G.1, G.6) |
+| O3 | `try/catch`, storage non utilizzabile, nessuna pulizia remota | **Approvata [AD]** (G.8); da precisare il controllo preventivo |
+| O4 | Misurazione prima di `T_stall`; 8 s solo indicatore | **Approvata [AD]** (G.9); `T_stall` **non fissata** |
+| O5 | Gate `idle`/`running`/`settling`, «Riprova disconnessione» | **Approvata [AD]** nel principio (G.7); 30 s e `logoutStuck` restano [P] |
+| O6 | Scrittura fallita al login = accesso fallito | **Approvata [AD]** (G.8) |
+| O7 | Riscrittura della frase di §23.12 C sul client bloccato | **Aperta**: richiede una prova con GoTrue reale (rete interrotta e ripristinata in locale) e una autorizzazione |
+| O8 | Rifiuti non gestiti: nessuna classificazione indiscriminata | **Approvata [AD]** (G.8) |
+| O9 | Operazioni sensibili | **Limitata a M3 [AD]**; il punto di controllo di G.10 è **[P]** |
+| O10 | Quattro stati pubblici, `accessGrant`, 8 s indicativi | **Approvata [AD]** come base documentale (G.6); nessuna autorizzazione al codice |
+| O11 | T2 (`SIGNED_IN` al rientro sulla scheda) | **Rinviata**: non blocca il contratto conservativo |
+
+##### G.12 Non caratterizzato e riesecuzione
+
+**[V]** `SIGNED_IN` al `visibilitychange` e `BroadcastChannel` tra schede (ambiente di test `node`); `USER_UPDATED` e `PASSWORD_RECOVERY`; storage reali in errore; 429 e altri limiti reali (assenti in locale); comportamento su Supabase in hosting; `signOut` bloccato da cause diverse da una richiesta di logout o da un refresh sospesi (questi due casi sono caratterizzati solo con risposte simulate, G.3), compreso il comportamento di una richiesta reale di logout senza timeout; cooldown e recupero con GoTrue reale; durata effettiva dei tentativi di refresh; consegna degli eventi precedenti a una sottoscrizione tardiva.
+
+**Riesecuzione.** `pnpm test:unit` (`tests/characterization/*`) e `pnpm test:integration` (`tests/integration/auth-*.characterization.int.test.ts`, richiede Supabase locale acceso). La tabella E **non cambia**: nessun punto [S] è verificato da queste prove.
