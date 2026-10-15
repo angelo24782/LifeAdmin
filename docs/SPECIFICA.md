@@ -1694,14 +1694,30 @@ Stato **dopo l'implementazione della migration**: i test elencati sono stati scr
 
 #### F. Strumento di verifica remota A3-0: stato e limiti
 
-Lo strumento è stato preparato per indagare i punti **[S]**, che **restano non verificati e non risolti**: un **client HTTP rigido** (passi B1 identità del progetto, B2 canarino `select 1`, B3 contesto del ruolo e RLS sulle sei tabelle `auth.*`) con la relativa suite di test. È **fuori dal repository** (archivio locale con manifest SHA-256) e non fa parte del codice del prodotto. La tabella separa ciò che è stato esercitato contro un mock, ciò che sul sistema reale non è stato verificato e ciò che i risultati attestano.
+Lo strumento è stato preparato per indagare i punti **[S]**, che **restano non verificati e non risolti**. È un client HTTP locale (passi B1 identità del progetto, B2 canarino `select 1`, B3 contesto del ruolo e RLS sulle sei tabelle `auth.*`) con una suite di test. **Non è stato eseguito contro l'endpoint reale** e non va considerato corretto, sicuro o pronto per la produzione. Si trova **fuori dal repository**, nello scratchpad di sessione dell'ambiente di lavoro, una cartella temporanea del sistema operativo: **non è un archivio persistente** e il suo contenuto può andare perso. Esiste inoltre una **copia locale** degli artefatti, con un elenco di hash, fuori dal repository: è soltanto una copia locale e **non è garantita come archivio persistente**.
 
-| Ambito | Stato |
-|---|---|
-| **Esercitato contro il mock** (HTTP su loopback, guard di rete, token fittizio, nessun SQL eseguito) | Il comportamento **del client**: rifiuto locale di valori non ammessi per base, token, variabili d'ambiente, metodo, percorso e tipo degli argomenti; timeout e risposte incomplete; Content-Type; decodifica UTF-8 rigorosa; classificazione degli esiti (PASS, FAIL, INCONCLUDENTE) e codici di uscita. Sono controlli applicati dal client prima o dopo la richiesta: **non** sono proprietà di sicurezza dimostrate sull'endpoint reale. |
-| **Non verificato sul sistema reale** | TLS e catena di certificati; autenticazione effettiva, validità e scope del token; autorizzazioni; ruolo PostgreSQL con cui l'endpoint esegue l'SQL; comportamento di `database/query/read-only` (SQL arbitrario, istruzioni multiple, scritture indirette, funzioni SECURITY DEFINER, RLS); formato reale di Content-Type e corpo; rate limit; console Windows e segnali del sistema operativo. |
-| **B1, B2, B3 sull'endpoint reale** | **Non eseguiti e non autorizzati.** Richiedono un'approvazione esplicita. |
-| **Punti [S]** | **Restano non verificati.** La tabella E non cambia. |
-| **Che cosa attestano i risultati** | La suite ha dato due esecuzioni consecutive da **512/512** casi conformi: attesta la conformità del client ai propri test, eseguiti contro il mock, **non** la sicurezza complessiva dell'endpoint né del progetto. Dipende da Node 24.20.0 e undici; la sensibilità dei test di regressione su stato non accettato e su abort non è dimostrata con mutazioni. |
+I dati numerici qui sotto sono **risultati riportati nelle verifiche precedenti e non riverificati in questa fase**.
 
-**I risultati locali non costituiscono una certificazione di sicurezza dell'endpoint reale** e non permettono di considerare soddisfatti i punti **[S]**.
+**Analisi locale** (file e codice locali, senza richieste di rete):
+- il client usa solo `GET /v1/projects/{ref}` e `POST /v1/projects/{ref}/database/query/read-only`, come risulta dal suo codice; la corrispondenza con l'API reale non è stata verificata;
+- le due istruzioni SQL fisse di B2 e B3 e il file delle query di riferimento sono fissati da impronte SHA-256 nel codice e nei test.
+
+**Test esclusivamente con un mock** (HTTP su loopback, token fittizio, guard di rete locale, nessun SQL eseguito):
+- una suite di 512 casi, con due esecuzioni consecutive tutte conformi, riportata nel resoconto di chiusura della fase: controlla il rifiuto locale di base, token, variabili d'ambiente, metodo, percorso e tipo degli argomenti, i timeout e le risposte incomplete, il Content-Type, la decodifica UTF-8 e gli esiti PASS, FAIL e INCONCLUDENTE con i relativi codici di uscita;
+- alcune modifiche deliberate al client, fatte su copie di prova, sono state rilevate dai test (5 su 5 e 6 su 6 in due giri precedenti, riportate nel resoconto); per i test di stato HTTP non accettato e di abort la sensibilità non è dimostrata con una mutazione;
+- il mock non è l'API reale: formato delle risposte, intestazioni, limiti di richieste e comportamento del corpo possono differire.
+
+**Attività non eseguite o non autorizzate:**
+- B1, B2 e B3 sull'endpoint reale;
+- qualsiasi richiesta alla Management API, allo staging o alla produzione, qualsiasi SQL e qualsiasi uso di token reali;
+- TLS, console Windows reale, segnali del sistema operativo e comportamento in un browser;
+- il passo Q18 (confronto con le baseline), disabilitato.
+
+**Limiti ancora aperti (i requisiti [S] non sono verificati):**
+- nessuna richiesta reale è stata fatta: il comportamento dei trigger su `auth.users`, la persistenza del flag, il fail-closed, `REVOKE EXECUTE`, i limiti di richieste e la lunghezza dell'OTP non sono stati verificati su Supabase in hosting;
+- anche se fosse eseguito, A3-0 controllerebbe solo l'identità del progetto, un canarino e il contesto del ruolo, non il comportamento dei flussi di autenticazione;
+- la sicurezza dell'endpoint `database/query/read-only` non è verificata: SQL arbitrario, istruzioni multiple, scritture indirette, funzioni SECURITY DEFINER, RLS e ruolo effettivo non sono provati contro il sistema reale.
+
+**Lezioni sperimentali** (emerse in questo caso, da rivalutare altrove; non costituiscono una certificazione): controllare il tipo degli argomenti prima di espressioni regolari e coercioni; decodificare le risposte con UTF-8 rigoroso; testare anche le funzioni interne chiamate direttamente.
+
+**I risultati locali non costituiscono una certificazione di sicurezza dell'endpoint reale** e non permettono di considerare soddisfatti i punti **[S]**. La tabella E non cambia.
