@@ -33,3 +33,23 @@ export function sql(statement: string): Row[] {
     rmSync(dir, { recursive: true, force: true })
   }
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function requireUuid(value: string): string {
+  if (!UUID.test(value)) throw new Error('Identificativo utente non valido.')
+  return value
+}
+
+/**
+ * Solo per la caratterizzazione di auth-js: cancella le sessioni dell'utente nel database LOCALE
+ * (i refresh token vanno in cascata), come se il server le avesse revocate.
+ */
+export function deleteAuthSessions(userId: string): void {
+  sql(`delete from auth.sessions where user_id = '${requireUuid(userId)}'`)
+}
+
+/** Solo per la caratterizzazione di auth-js: cancella i refresh token lasciando la sessione. */
+export function deleteRefreshTokens(userId: string): void {
+  sql(`delete from auth.refresh_tokens where user_id = '${requireUuid(userId)}'`)
+}
