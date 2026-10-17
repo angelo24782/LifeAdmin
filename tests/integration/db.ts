@@ -3,32 +3,36 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { parseDbQueryOutput, type Row } from '../support/db-query-output'
+
 /**
  * Accesso SQL al database LOCALE per i soli test di integrazione (stato di `auth.*`, DDL temporaneo
  * per provare i fallimenti): usa `supabase db query --local`, quindi non servono credenziali né
  * dipendenze aggiuntive. Esegue UNA SOLA istruzione per chiamata (limite della CLI).
+ *
+ * La CLI (2.120.0) sceglie il formato dell'output in base all'ambiente: con un agente AI rilevato
+ * (per esempio la variabile `AI_AGENT`) risponde con un oggetto con `rows`, altrimenti con una tabella di
+ * testo. Per avere lo stesso comportamento ovunque (sviluppo, agente, CI) la chiamata fissa
+ * `--agent no --output-format json`; l'output è letto da `parseDbQueryOutput`, che non trasforma mai in
+ * "nessuna riga" un formato inatteso o un errore.
  */
-export type Row = Record<string, unknown>
+export type { Row }
 
 export function sql(statement: string): Row[] {
   const dir = mkdtempSync(join(tmpdir(), 'lifeadmin-sql-'))
   const file = join(dir, 'query.sql')
   writeFileSync(file, statement, 'utf8')
   try {
-    const result = spawnSync(`pnpm exec supabase db query --local -f "${file}"`, {
-      encoding: 'utf8',
-      shell: true,
-    })
+    const result = spawnSync(
+      `pnpm exec supabase db query --local --agent no --output-format json -f "${file}"`,
+      { encoding: 'utf8', shell: true },
+    )
     const out = `${result.stdout}`
     if (result.status !== 0) {
       throw new Error(`sql() fallita (${result.status}): ${out}${result.stderr}`)
     }
-    const start = out.indexOf('{')
-    // Le istruzioni senza righe (DDL) rispondono solo con il tag del comando: nessun JSON.
-    if (start < 0) return []
-    const parsed = JSON.parse(out.slice(start)) as { rows?: Row[]; error?: { message?: string } }
-    if (parsed.error) throw new Error(`sql() fallita: ${parsed.error.message ?? out}`)
-    return parsed.rows ?? []
+    // Le istruzioni senza righe (DDL, DELETE…) rispondono solo con il tag del comando: nessun JSON.
+    return parseDbQueryOutput(out)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
