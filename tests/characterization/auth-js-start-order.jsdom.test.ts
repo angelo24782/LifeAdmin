@@ -611,12 +611,7 @@ const EXPECTED: Record<string, Summary> = {
       secondiSimulati: 0.5,
     },
     events: ['>> initialize() 1: chiamato', '>> initialize() 1: risolto'],
-    requests: [
-      'POST /auth/v1/token?grant_type=refresh_token',
-      'POST /auth/v1/token?grant_type=refresh_token',
-      'POST /auth/v1/token?grant_type=refresh_token',
-      'POST /auth/v1/token?grant_type=refresh_token',
-    ],
+    requests: [],
     storageReads: 8,
     keyBefore: true,
     keyAfter: false,

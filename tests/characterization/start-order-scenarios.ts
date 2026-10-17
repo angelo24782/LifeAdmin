@@ -22,6 +22,8 @@ import type { Database } from '@/shared/types/database'
 interface Call {
   readonly method: string
   readonly path: string
+  /** Identificativo del client che ha emesso la richiesta (intestazione `x-test-client`), `null` se assente. */
+  readonly client: number | null
 }
 type Reply = Response | 'network'
 type Handler = (call: Call) => Reply
@@ -37,7 +39,10 @@ export interface Observation {
   } | null
   readonly detail: Readonly<Record<string, string | number | boolean | null>>
   readonly events: readonly string[]
+  /** Solo le richieste dei client creati dal test corrente. */
   readonly requests: readonly string[]
+  /** Richieste di client estranei al test corrente: non devono esistere (vedi `check`). Non fanno parte di `Summary`. */
+  readonly foreignRequests?: readonly string[]
   readonly storageReads: number
   readonly keyBefore: boolean
   readonly keyAfter: boolean
@@ -143,6 +148,8 @@ const clients: AppSupabaseClient[] = []
 
 /** Solo per le prove di diagnosi: con `CHARACTERIZATION_TRACE=<file>` registra creazioni, letture e richieste per client. */
 let clientCounter = 0
+/** Primo identificativo dei client creati dal test corrente: i precedenti sono «estranei». */
+let firstOwnClientId = 1
 function trace(line: string): void {
   const out = process.env.CHARACTERIZATION_TRACE
   if (out)
@@ -164,12 +171,14 @@ function createEnv(initialRaw: string | null, handler: Handler): Env {
     if (url.hostname !== '127.0.0.1') {
       throw new Error(`Richiesta fuori dal perimetro simulato: ${url.hostname}`)
     }
+    const clientHeader = new Headers(init?.headers).get('x-test-client')
     const call: Call = {
       method: (init?.method ?? 'GET').toUpperCase(),
       path: `${url.pathname}${url.search}`,
+      client: clientHeader !== null && /^\d+$/.test(clientHeader) ? Number(clientHeader) : null,
     }
     calls.push(call)
-    trace(`REQ client=${new Headers(init?.headers).get('x-test-client') ?? '?'} ${key(call)}`)
+    trace(`REQ client=${clientHeader ?? '?'} ${key(call)}`)
     const reply = current(call)
     return reply === 'network'
       ? Promise.reject(new TypeError('fetch failed'))
@@ -286,6 +295,8 @@ async function observe(
     elapsed += step
   }
   const result = settled ? await pending : { error: null, detail: {}, thrown: false }
+  const observed = env.calls.slice(callsBefore)
+  const isOwn = (call: Call): boolean => call.client !== null && call.client >= firstOwnClientId
   return {
     scenario,
     origin: 'simulata',
@@ -298,7 +309,10 @@ async function observe(
       secondiSimulati: elapsed / 1000,
     },
     events: actor.events.slice(eventsBefore),
-    requests: env.calls.slice(callsBefore).map(key),
+    requests: observed.filter(isOwn).map(key),
+    foreignRequests: observed
+      .filter((call) => !isOwn(call))
+      .map((call) => `client ${call.client ?? 'sconosciuto'}: ${key(call)}`),
     storageReads: env.storage.ops.reads - readsBefore,
     keyBefore,
     keyAfter: env.storage.contents.has(AUTH_STORAGE_KEY),
@@ -338,6 +352,13 @@ export function defineStartOrderScenarios(
     // `expect.soft`: la prova continua, così il report è completo anche con valori mancanti.
     expect
       .soft(
+        observation.foreignRequests ?? [],
+        `Richieste attribuibili a client estranei allo scenario ${observation.scenario}: ` +
+          'client di test precedenti non ripuliti (dispose) o interferenza tra client (es. BroadcastChannel)',
+      )
+      .toEqual([])
+    expect
+      .soft(
         observation.scenario in expected,
         `Valore atteso mancante per lo scenario ${observation.scenario}`,
       )
@@ -349,6 +370,7 @@ export function defineStartOrderScenarios(
 
   beforeEach(() => {
     vi.useFakeTimers()
+    firstOwnClientId = clientCounter + 1
     // Solo per le prove di diagnosi: `CHARACTERIZATION_NO_BROADCAST=1` toglie `BroadcastChannel` per la
     // durata del singolo test (`vi.unstubAllGlobals()` in `afterEach` lo ripristina). Senza la variabile
     // il comportamento dei test è invariato.
@@ -356,7 +378,9 @@ export function defineStartOrderScenarios(
   })
 
   afterEach(async () => {
-    for (const client of clients.splice(0)) await client.auth.stopAutoRefresh()
+    // `dispose()` ferma il rinnovo, chiude il BroadcastChannel e svuota i sottoscrittori: i client di
+    // un test non possono più interferire con i test successivi.
+    for (const client of clients.splice(0)) await client.auth.dispose()
     vi.useRealTimers()
     vi.unstubAllGlobals()
   })

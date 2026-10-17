@@ -322,7 +322,8 @@ export function defineDeferInitScenarios(
   })
 
   afterEach(async () => {
-    for (const client of clients.splice(0)) await client.auth.stopAutoRefresh()
+    // `dispose()` ferma il rinnovo, chiude il BroadcastChannel e svuota i sottoscrittori.
+    for (const client of clients.splice(0)) await client.auth.dispose()
     vi.useRealTimers()
     vi.unstubAllGlobals()
   })

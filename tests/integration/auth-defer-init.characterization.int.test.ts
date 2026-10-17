@@ -9,11 +9,22 @@
  * mai i token. Il client è creato con `createClient` e le stesse opzioni di `createSupabaseClient`
  * più `skipAutoInitialize`: `supabaseClient.ts` non è modificato.
  *
- * Perimetro e isolamento: solo loopback (il test fallisce se una richiesta esce dal perimetro); gli
- * utenti sono creati dal test con un prefisso proprio e un UUID, e SOLO quelli creati qui (gli
- * identificativi restituiti dalla creazione) vengono eliminati a fine test, in `finally`. Nessuna
- * credenziale nel repository. L'offline non è simulabile contro lo stack locale senza alterarlo:
- * resta coperto dalle sole simulazioni.
+ * Perimetro: `beforeAll` verifica che `SUPABASE_URL` sia l'origine locale attesa
+ * (`http://127.0.0.1:54321` o `http://localhost:54321`, porta di `[api] port` in `supabase/config.toml`)
+ * e il `fetch` sostituito rifiuta, senza inviarla, ogni richiesta verso un'origine diversa da quella
+ * verificata (protocollo, host e porta); il test fallisce se ne rifiuta qualcuna.
+ *
+ * Utenti temporanei: creati dal test con un prefisso proprio e un UUID. Un identificativo entra
+ * nell'elenco da eliminare SOLO dopo che l'email restituita da `createUser` coincide con quella
+ * richiesta. A fine file `afterAll` elimina soltanto quegli identificativi e fa FALLIRE il file se
+ * `deleteUser` restituisce un errore o lancia (nessuna eliminazione per pattern né in SQL).
+ * **Se il processo termina prima di `afterAll`** (interruzione, crash, timeout dei hook) gli utenti
+ * già creati possono restare nel database locale (email `m3-defer-<etichetta>-<UUID>@example.test`) e
+ * vanno eliminati a mano: non esiste una pulizia automatica più ampia.
+ *
+ * Nessuna credenziale nel repository. L'offline non è simulabile contro lo stack locale senza
+ * alterarlo: resta coperto dalle sole simulazioni. La logica di verifica e di pulizia è in
+ * `../support/temporary-users` ed è provata con risposte simulate in `tests/characterization/temporary-users.test.ts`.
  */
 import { randomUUID } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
@@ -30,6 +41,14 @@ import {
 import type { Database } from '@/shared/types/database'
 
 import { anonKey, createAdminClient, PRIVACY_VERSION, supabaseUrl } from './support'
+import {
+  createPerimeterFetch,
+  createTemporaryUser,
+  deleteTemporaryUsers,
+  expectedLocalOrigin,
+  type AdminUsersApi,
+  type PerimeterFetch,
+} from '../support/temporary-users'
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 })
 
@@ -61,44 +80,43 @@ interface StoredSession {
 }
 
 const TEST_EMAIL_PREFIX = 'm3-defer-'
-const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
 const admin = createAdminClient()
-/** Solo gli utenti creati da questo file: sono gli unici che vengono eliminati. */
+const adminUsers: AdminUsersApi = {
+  createUser: (attributes) => admin.auth.admin.createUser(attributes),
+  deleteUser: (id) => admin.auth.admin.deleteUser(id),
+}
+/** Solo gli utenti creati da questo file, con email verificata: sono gli unici che vengono eliminati. */
 const createdIds = new Set<string>()
 const requestLog: string[] = []
-const outOfPerimeter: string[] = []
+let perimeter: PerimeterFetch | null = null
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const nowSeconds = () => Math.floor(Date.now() / 1000)
 
 beforeAll(() => {
-  const host = new URL(supabaseUrl()).hostname
-  if (!LOOPBACK.has(host)) {
-    throw new Error(`SUPABASE_URL non è un indirizzo di loopback (${host}): test interrotti.`)
-  }
-  const realFetch = globalThis.fetch
-  vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = new URL(
-      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
-    )
-    if (!LOOPBACK.has(url.hostname)) {
-      outOfPerimeter.push(url.hostname)
-      return Promise.reject(new Error(`Richiesta fuori dal perimetro locale: ${url.hostname}`))
-    }
-    requestLog.push(`${(init?.method ?? 'GET').toUpperCase()} ${url.pathname}${url.search}`)
-    return realFetch(input, init)
+  // Prima di qualunque richiesta: l'URL deve essere l'origine locale attesa, porta compresa.
+  const allowedOrigin = expectedLocalOrigin(supabaseUrl())
+  perimeter = createPerimeterFetch(globalThis.fetch, allowedOrigin, (method, pathAndQuery) => {
+    requestLog.push(`${method} ${pathAndQuery}`)
   })
+  vi.stubGlobal('fetch', perimeter.fetch)
 })
 
 const clients: { auth: { stopAutoRefresh(): Promise<void> } }[] = []
 
 afterAll(async () => {
+  let cleanupFailures: string[]
   try {
     for (const client of clients.splice(0)) await client.auth.stopAutoRefresh()
   } finally {
-    for (const id of createdIds) await admin.auth.admin.deleteUser(id)
+    // Ogni errore (restituito o lanciato) è raccolto: nessun fallimento di pulizia viene ignorato.
+    cleanupFailures = await deleteTemporaryUsers(adminUsers, [...createdIds])
     vi.unstubAllGlobals()
   }
-  expect(outOfPerimeter).toEqual([])
+  expect(perimeter?.rejected ?? [], 'Richieste rifiutate dal perimetro locale').toEqual([])
+  expect(
+    cleanupFailures,
+    'Utenti temporanei NON eliminati: eliminarli a mano dal database locale (email m3-defer-…@example.test)',
+  ).toEqual([])
 })
 
 interface Source {
@@ -110,16 +128,13 @@ interface Source {
 async function createSource(label: string): Promise<Source> {
   const email = `${TEST_EMAIL_PREFIX}${label}-${randomUUID()}@example.test`
   const password = `${randomUUID()}${randomUUID()}`
-  const { data, error } = await admin.auth.admin.createUser({
+  // L'identificativo è registrato per la pulizia solo se l'email restituita coincide con quella richiesta.
+  const userId = await createTemporaryUser(adminUsers, {
     email,
     password,
-    email_confirm: true,
     user_metadata: { privacy_version: PRIVACY_VERSION },
   })
-  if (error || !data.user) throw error ?? new Error('createUser fallita')
-  if (!email.startsWith(TEST_EMAIL_PREFIX))
-    throw new Error('Utente non identificato come temporaneo.')
-  createdIds.add(data.user.id)
+  createdIds.add(userId)
 
   const platform = createFakePlatform()
   const client: AppSupabaseClient = createSupabaseClient({
@@ -135,7 +150,7 @@ async function createSource(label: string): Promise<Source> {
   await client.auth.stopAutoRefresh()
   const raw = platform.storageContents.get(AUTH_STORAGE_KEY)
   if (!raw) throw new Error('Nessuna sessione nello storage.')
-  return { id: data.user.id, rawSession: raw }
+  return { id: userId, rawSession: raw }
 }
 
 interface Deferred {
