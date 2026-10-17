@@ -21,13 +21,14 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "check:bundle": "node scripts/check-bundle.mjs",
-    "supabase:start": "supabase start -x studio,imgproxy,logflare,vector,edge-runtime,supavisor,realtime,storage-api,mailpit",
+    "supabase:start": "supabase start -x studio,imgproxy,logflare,vector,edge-runtime,supavisor,realtime,storage-api",
     "supabase:stop": "supabase stop",
     "db:reset": "supabase db reset",
     "db:lint": "supabase db lint",
     "db:test": "supabase test db",
     "db:types": "supabase gen types typescript --local --schema public > src/shared/types/database.ts",
-    "test:integration": "node scripts/run-integration.mjs"
+    "test:integration": "node scripts/run-integration.mjs",
+    "test:auth-guard-mutations": "node scripts/verify-auth-guard-mutations.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

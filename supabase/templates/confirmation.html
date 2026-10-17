@@ -1,0 +1,10 @@
+<h2>Conferma il tuo account LifeAdmin</h2>
+<p>Il tuo codice di verifica è:</p>
+<p style="font-size: 24px; letter-spacing: 4px"><strong>{{ .Token }}</strong></p>
+<p>Il codice vale 10 minuti. In alternativa apri questo link:</p>
+<p>
+  <a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=signup"
+    >Conferma il mio account</a
+  >
+</p>
+<p>Se non hai richiesto tu questa registrazione, ignora questa email.</p>
