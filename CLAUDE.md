@@ -48,6 +48,16 @@ Questo file è la memoria del progetto tra una chat e l'altra: **va tenuto sempr
 - Per testare pagine web (app locale, siti, ClickUp) usa **Claude in Chrome** (`mcp__claude-in-chrome__*`), non il browser integrato dell'app. Se l'estensione non è collegata, dillo.
 - La CI GitHub parte su **pull request** e su push a `main`, non su push di un branch: per vederla serve una PR (la apre l'utente).
 
+### Flusso Git (procedurale)
+
+GitHub attualmente **non impone** controlli CI obbligatori su `main` (nessuna protezione di branch né ruleset): le regole di questa sezione sono **procedurali**, non imposte dalla piattaforma.
+
+- **Branch**: `branch-angelo` è l'unico branch di lavoro abituale; `main` è il riferimento stabile (lavoro integrato e verificato). `branch-angelo` va mantenuto come branch di lavoro abituale.
+- **PR**: si apre da `branch-angelo` verso `main` quando il lavoro è pronto, con le verifiche della checklist di fine milestone e una descrizione completa. Si unisce solo con la CI verde e, per scelta procedurale, con **Create a merge commit**: GitHub consente anche squash e rebase, ma da evitare perché fanno divergere `branch-angelo` da `main`.
+- **Riallineamento dopo il merge** (prima di riprendere a lavorare): working tree pulito e nessun commit locale non pushato, poi `git fetch origin`, `git switch branch-angelo`, `git merge --ff-only origin/main`. Se il comando fallisce **ci si ferma**: niente merge normale, rebase, reset o altro riallineamento automatico; Claude fa solo un'analisi in sola lettura (`git log --left-right --graph origin/main...branch-angelo`, `git merge-base`, `git diff --stat`) e Angelo decide.
+- **Dependabot**: i branch `dependabot/*` sono automatici e restano fuori dal flusso quotidiano: nessun checkout, pull o lavoro locale su di essi; si valutano dalle PR su GitHub. Una PR Dependabot si unisce solo se la CI è verde e valida rispetto al `main` corrente e la PR non presenta uno stato obsoleto o ambiguo (ad esempio mergeability `unknown`); la sola data di esecuzione dei controlli non è una garanzia sufficiente. Se non è possibile confermarlo, ci si ferma e si richiede una nuova verifica. Dopo ogni merge `main` cambia: si rivalutano le altre PR, una alla volta. Gli aggiornamenti di versione maggiore si confrontano prima con la matrice di SPECIFICA §14 e con `engines` in `package.json`. Come ottenere una CI aggiornata su una PR lo decide Angelo.
+- **Chi fa cosa**: Angelo esegue ogni operazione che scrive o modifica Git o GitHub (fetch, switch, merge, commit, push, apertura/merge/chiusura delle PR, interventi sulle PR Dependabot, impostazioni GitHub, workflow, `dependabot.yml`). Claude può solo verificare in sola lettura e preparare: stato git, file da committare con messaggio convenzionale, descrizione della PR, lettura di stato PR, CI e impostazioni su GitHub, classificazione delle PR Dependabot, analisi di un eventuale fallimento di `--ff-only`, modifiche ai file di documentazione senza commit.
+
 ## Stack e versioni (pinnate, matrice in SPECIFICA §14)
 
 Node 24 · pnpm 10 · Vue 3.5 · Vite 8 · **TypeScript 6.0.x (NON 7.x: `typescript-eslint` non lo supporta)** ·
