@@ -11,6 +11,13 @@ export type AppErrorCode =
   | 'invalid_data'
   | 'network'
   | 'unknown'
+  // Autenticazione (M3): prodotti da `toAuthAppError` (features/auth/errors.ts).
+  | 'invalid_credentials'
+  | 'email_not_confirmed'
+  | 'invalid_code'
+  | 'weak_password'
+  | 'rate_limited'
+  | 'already_registered'
 
 const USER_MESSAGES: Record<AppErrorCode, string> = {
   unauthenticated: 'La sessione è scaduta. Accedi di nuovo.',
@@ -20,6 +27,15 @@ const USER_MESSAGES: Record<AppErrorCode, string> = {
   invalid_data: 'I dati inseriti non sono validi.',
   network: 'Impossibile contattare il server. Controlla la connessione e riprova.',
   unknown: 'Qualcosa è andato storto. Riprova tra poco.',
+  invalid_credentials: 'Email o password non corretti.',
+  email_not_confirmed:
+    'Devi prima confermare il tuo indirizzo email. Puoi richiedere un nuovo codice.',
+  invalid_code: 'Il codice non è valido o è scaduto. Richiedine uno nuovo.',
+  weak_password: 'La password scelta non è abbastanza sicura. Scegline un’altra.',
+  rate_limited: 'Troppi tentativi, riprova tra qualche minuto.',
+  // Neutro: identico all'esito di una registrazione riuscita, per non rivelare se l'account esiste.
+  already_registered:
+    'Se l’indirizzo è corretto, riceverai a breve un’email con il codice di verifica.',
 }
 
 export class AppError extends Error {
