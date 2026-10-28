@@ -37,6 +37,29 @@ describe('toAppError', () => {
     expect(toAppError(original)).toBe(original)
   })
 
+  it('does not interpret authentication errors: those go through toAuthAppError', () => {
+    const cause = { code: 'invalid_credentials', message: 'Invalid login credentials' }
+
+    expect(toAppError(cause).code).toBe('unknown')
+  })
+
+  it.each([
+    ['invalid_credentials', 'Email o password non corretti.'],
+    [
+      'email_not_confirmed',
+      'Devi prima confermare il tuo indirizzo email. Puoi richiedere un nuovo codice.',
+    ],
+    ['invalid_code', 'Il codice non è valido o è scaduto. Richiedine uno nuovo.'],
+    ['weak_password', 'La password scelta non è abbastanza sicura. Scegline un’altra.'],
+    ['rate_limited', 'Troppi tentativi, riprova tra qualche minuto.'],
+    [
+      'already_registered',
+      'Se l’indirizzo è corretto, riceverai a breve un’email con il codice di verifica.',
+    ],
+  ] as const)('has the Italian user message for the authentication code %s', (code, message) => {
+    expect(new AppError(code).message).toBe(message)
+  })
+
   it('keeps the technical cause out of the user message', () => {
     const cause = { code: '23505', message: 'duplicate key value violates unique constraint "x"' }
     const error = toAppError(cause)

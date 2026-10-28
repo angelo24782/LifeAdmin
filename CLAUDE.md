@@ -17,7 +17,8 @@ Leggi la specifica (almeno le sezioni della milestone in corso, §14, §20, §23
 
 - **M1** (setup progetto, livello `platform/`, CI) — chiusa.
 - **M2** (schema DB, RLS, client Supabase, service layer, test) — chiusa, CI verde.
-- **M3 — Autenticazione**: piano v0.5 approvato; **implementata solo la parte database** (migration `auth_prehijack_guard`, config locale, template email, test pgTAP/integrazione/mutazione, verificati in locale); client, store, pagine e router di auth **non iniziati** (vedi §20, §23.3/§23.4, §23.12). Non scrivere codice M3 senza il via esplicito.
+- **M3 — Autenticazione**: piano v0.5 approvato; **implementata solo la parte database** (migration `auth_prehijack_guard`, config locale, template email, test pgTAP/integrazione/mutazione, verificati in locale); client auth (M3-a) avviato: **A1** costanti e schemi Zod (`ec364ad`) e **A2** `toAuthAppError` (`ebb8c39`) committati il 2026-10-20; **A3** `useZodForm` (`c7d2b28`) committato il 2026-10-28; A4 service, A5 store, pagine e router **non iniziati** (vedi §20, §23.3/§23.4, §23.12). Non scrivere codice M3 senza il via esplicito.
+- Ripartenza e stato condiviso anche in `C:\_ProgettiAGM\_HANDOFF\03f-LIFEADMIN.md`.
 - Fase Web MVP = M1–M13; fase Mobile = M14–M22.
 
 ## Manutenzione di questo file (obbligatoria, in ogni chat)
