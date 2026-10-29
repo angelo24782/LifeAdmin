@@ -21,6 +21,10 @@ Regole per chi scrive codice client:
 | `authenticated` | Solo ciò che è elencato sotto, sempre limitato alle proprie righe (RLS). |
 | `service_role`  | Solo Edge Function e test. **Mai** nel client.                           |
 
+`service_role` ha privilegi espliciti e minimi, mai ereditati dai grant automatici di Supabase
+(SPECIFICA §6): `profiles` SELECT, DELETE; `categories` SELECT, INSERT; `life_items` SELECT;
+nessuno su `recurrence_rules` e `item_completions`.
+
 ## Tabelle (schema `public`)
 
 | Tabella            | SELECT            | INSERT (colonne)                                                       | UPDATE (colonne)                                                                                  | DELETE  |
