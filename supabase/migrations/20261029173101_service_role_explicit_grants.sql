@@ -1,5 +1,5 @@
 -- M3 · `service_role_explicit_grants`: privilegi espliciti e minimi di `service_role` sulle tabelle
--- di public (SPECIFICA §12).
+-- di public (SPECIFICA §6).
 --
 -- Fino a qui `service_role` riceveva tutti i privilegi dai privilegi predefiniti di Supabase
 -- (grant automatici della Data API, `[api] auto_expose_new_tables`), non dalle migration. Supabase
