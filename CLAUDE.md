@@ -17,7 +17,7 @@ Leggi la specifica (almeno le sezioni della milestone in corso, §14, §20, §23
 
 - **M1** (setup progetto, livello `platform/`, CI) — chiusa.
 - **M2** (schema DB, RLS, client Supabase, service layer, test) — chiusa, CI verde.
-- **M3 — Autenticazione**: piano v0.5 approvato; **implementata solo la parte database** (migration `auth_prehijack_guard`, config locale, template email, test pgTAP/integrazione/mutazione, verificati in locale); client auth (M3-a) avviato: **A1** costanti e schemi Zod (`ec364ad`) e **A2** `toAuthAppError` (`ebb8c39`) committati il 2026-10-20; **A3** `useZodForm` (`c7d2b28`) committato il 2026-10-28; A4 service, A5 store, pagine e router **non iniziati** (vedi §20, §23.3/§23.4, §23.12). Non scrivere codice M3 senza il via esplicito.
+- **M3 — Autenticazione**: piano v0.5 approvato; **implementata solo la parte database** (migration `auth_prehijack_guard` e `service_role_explicit_grants`, config locale, template email, test pgTAP/integrazione/mutazione, verificati in locale); client auth (M3-a) avviato: **A1** costanti e schemi Zod (`ec364ad`) e **A2** `toAuthAppError` (`ebb8c39`) committati il 2026-10-20; **A3** `useZodForm` (`c7d2b28`) committato il 2026-10-28; A4 service, A5 store, pagine e router **non iniziati** (vedi §20, §23.3/§23.4, §23.12). Non scrivere codice M3 senza il via esplicito.
 - Ripartenza e stato condiviso anche in `C:\_ProgettiAGM\_HANDOFF\03f-LIFEADMIN.md`.
 - Fase Web MVP = M1–M13; fase Mobile = M14–M22.
 
@@ -92,6 +92,8 @@ Previsti ma **non ancora installati**: `@axe-core/playwright` (dev, M3), Capacit
 
 - Funzioni e trigger interni nello schema **`private`** (non esposto). Nessun RPC in `public`.
 - Ogni tabella: RLS attiva, `revoke all` a `public/anon/authenticated`, grant minimi anche per colonna, `owner_id` con `default auth.uid()` e non inseribile/aggiornabile dal client, FK composta `(item_id, owner_id)` sulle figlie.
+- **Grant espliciti anche per `service_role`** (SPECIFICA §6): nessun oggetto di `public` dipende dai grant automatici (`[api] auto_expose_new_tables = false`). Ogni migration che crea una tabella fa `revoke all` anche a `service_role`, concede il minimo e aggiorna `supabase/tests/database/60_table_privileges.test.sql` (la guardia fallisce altrimenti). Oggi: `profiles` SELECT/DELETE, `categories` SELECT/INSERT, `life_items` SELECT.
+- La CLI npm 2.120 (versione TypeScript) con `auto_expose_new_tables` non impostato **mantiene** i grant automatici, la CLI Go della stessa versione li revoca: l'opzione va sempre impostata in modo esplicito. Con `false` la revoca toglie solo SELECT/INSERT/UPDATE/DELETE: TRUNCATE, REFERENCES, TRIGGER e MAINTAIN restano nei privilegi predefiniti, per questo le migration fanno `revoke all` (verificato su stack isolato il 2026-10-29).
 - **I test RLS devono passare anche da PostgREST reale**, non solo da pgTAP: pgTAP può mascherare errori di privilegi (piani già compilati come superutente). Gli helper pgTAP fanno `discard plans` al cambio ruolo.
 - Dopo aver scritto policy o grant, fai una **verifica a mutazione** (rompi di proposito una policy e controlla che i test falliscano).
 
