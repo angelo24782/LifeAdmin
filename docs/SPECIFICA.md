@@ -1893,25 +1893,28 @@ Una sessione presente o un `getUser()` riuscito **non** sostituiscono la condizi
 - Alla scadenza di qualunque soglia lo stato **non** concede accesso e **non** diventa `unauthenticated` da solo; **[P]** lo stato di arrivo sarebbe `unverifiable`.
 - **[SIM]** Esempio di caso che la giustifica: T6a, nessun evento mai (G.2). **[V]** Non è stato misurato con uno storage reale.
 
-##### G.10 Cambio password in M3 **[AD]** nel requisito, **[P]** nel punto di controllo
+##### G.10 Cambio password in M3 **[AD]** (requisito; punto di controllo approvato il 2026-10-31)
 
 **[AD] Requisito.** La modifica della password richiede un'**autenticazione verificata dal server** e un controllo del flusso **prima** di `updateUser()`. Il resto delle operazioni sensibili resta rinviato alle milestone che le introducono.
 
-**[P] Punto di controllo proposto** (non implementato): all'inizio della funzione di servizio che esegue il cambio password (prevista in `features/auth/service.ts`), **immediatamente prima** di `updateUser({ password })`:
-1. richiedere stato `authenticated` con evidenza del server (non `accessGrant`: in `/set-password` il flag è `true` per definizione);
-2. chiamare `getUser()` e confrontare l'`id` con quello dello stato;
-3. solo se l'esito è positivo chiamare `updateUser`; dopo il successo, rileggere il flag (deve diventare `false`) ed eseguire `signOut({ scope: 'others' })` (§23.12 A).
+**[AD] Punto di controllo** (approvato il 2026-10-31 come decisione di progetto; non ancora implementato, l'implementazione richiede un'autorizzazione separata): nella funzione di servizio che esegue il cambio password (`features/auth/service.ts`, usata anche dal recupero password), con firma `setPassword({ password, expectedUserId })`:
+1. chiamare `getUser()` **prima** di `updateUser({ password })`;
+2. confrontare l'`id` restituito dal server con `expectedUserId`, l'utente che il chiamante ritiene autenticato. Lo stato `authenticated` con evidenza del server (non `accessGrant`: in `/set-password` il flag è `true` per definizione) è responsabilità del chiamante, cioè dello store di A5: il service non conosce gli stati applicativi;
+3. **fail-closed**: se la verifica non è possibile o l'identità è diversa, `updateUser` **non** viene chiamato;
+4. solo con esito positivo chiamare `updateUser`; dopo il successo, rileggere il flag (deve diventare `false`) ed eseguire `signOut({ scope: 'others' })` (§23.12 A).
 
-| Esito di `getUser()` | Trattamento proposto |
-|---|---|
-| Utente corrispondente | si procede con `updateUser` |
-| `AuthSessionMissingError` con `SIGNED_OUT` e chiave assente (S6, S7 [LR]) | si interrompe; stato `unauthenticated` tramite l'evento |
-| Rete assente o JSON non valido, 5xx, 429, errore inatteso (S1, S4, S5, S12 [SIM]) | si interrompe senza chiamare `updateUser`; stato `unverifiable`; messaggio di riprova |
-| `user_not_found` o `bad_jwt` a chiave presente (S8, S9 [LR]) | si interrompe; `unverifiable` con motivo di rifiuto del server |
-| `userId` diverso | si interrompe; contraddizione |
-| Eccezione lanciata (storage, G.2) | si interrompe; `unverifiable/storage_error` o errore non classificato (G.8) |
+Il service restituisce **esiti tipizzati e distinti**; la loro traduzione negli stati applicativi (`unauthenticated`, `unverifiable`, …) è responsabilità dello store (A5).
 
-Errori di `updateUser` (per esempio `weak_password`) seguono §23.12 A. **Concorrenza [P]**: un solo cambio password alla volta; una `getUser()` già in corso si condivide solo se è partita **dopo** la richiesta del cambio. **Costo**: una `GET /auth/v1/user` in più (1 richiesta [LR]). **Limite**: tra la verifica e la scrittura la sessione può essere revocata; il controllo definitivo resta del server.
+| Esito di `getUser()` | Esito restituito dal service (in nessuno di questi casi si chiama `updateUser`, salvo il primo) | Stato applicativo (A5) |
+|---|---|---|
+| Utente corrispondente | si procede con `updateUser` | — |
+| `AuthSessionMissingError` con `SIGNED_OUT` e chiave assente (S6, S7 [LR]) | sessione assente | `unauthenticated` tramite l'evento |
+| Rete assente o JSON non valido, 5xx, 429, errore inatteso (S1, S4, S5, S12 [SIM]) | verifica impossibile, con motivo | `unverifiable`; messaggio di riprova |
+| `user_not_found` o `bad_jwt` a chiave presente (S8, S9 [LR]) | verifica impossibile, motivo «rifiuto del server» | `unverifiable` |
+| `userId` diverso da `expectedUserId` | utente diverso | contraddizione |
+| Eccezione lanciata (storage, G.2) | verifica impossibile, motivo `storage_error` o errore non classificato | `unverifiable` (G.8) |
+
+Errori di `updateUser` (per esempio `weak_password`) seguono §23.12 A e sono restituiti come esito distinto. **Successo con passi successivi falliti**: se `updateUser` riesce ma la rilettura del flag non dà `false` oppure `signOut({ scope: 'others' })` fallisce, la password **è stata cambiata**: il service restituisce un esito di successo con avviso, **mai** un fallimento del cambio password. **Concorrenza**: un solo cambio password alla volta **per istanza di `AppSupabaseClient`**: registro a livello di modulo nel service (`WeakMap<AppSupabaseClient, Promise>`, con chiave il client), condiviso da tutte le chiamate che usano la stessa istanza; una seconda chiamata mentre la prima è in corso viene rifiutata con un esito dedicato, senza chiamare `getUser` né `updateUser`; il blocco è rilasciato in ogni caso al termine (`finally`); client diversi non si bloccano a vicenda. **Limite del blocco**: altre schede e altri dispositivi non sono coperti; il controllo definitivo resta del server. **Costo**: una `GET /auth/v1/user` in più (1 richiesta [LR]). **Limite**: tra la verifica e la scrittura la sessione può essere revocata; il controllo definitivo resta del server.
 
 ##### G.11 Stato delle decisioni O1–O11 (2026-10-15)
 
@@ -1925,7 +1928,7 @@ Errori di `updateUser` (per esempio `weak_password`) seguono §23.12 A. **Concor
 | O6 | Scrittura fallita al login = accesso fallito | **Approvata [AD]** (G.8) |
 | O7 | Riscrittura della frase di §23.12 C sul client bloccato | **Aperta**: richiede una prova con GoTrue reale (rete interrotta e ripristinata in locale) e una autorizzazione |
 | O8 | Rifiuti non gestiti: nessuna classificazione indiscriminata | **Approvata [AD]** (G.8) |
-| O9 | Operazioni sensibili | **Limitata a M3 [AD]**; il punto di controllo di G.10 è **[P]** |
+| O9 | Operazioni sensibili | **Limitata a M3 [AD]**; il punto di controllo di G.10 è **[AD]** dal 2026-10-31 (decisione di progetto, implementazione da autorizzare) |
 | O10 | Quattro stati pubblici, `accessGrant`, 8 s indicativi | **Approvata [AD]** come base documentale (G.6); nessuna autorizzazione al codice |
 | O11 | T2 (`SIGNED_IN` al rientro sulla scheda) | **Rinviata**: non blocca il contratto conservativo |
 
