@@ -750,14 +750,20 @@ const USER_ENDPOINT = 'GET /auth/v1/user'
 const authFailure = (status: number, errorCode: string): Response =>
   jsonReply(status, { code: status, error_code: errorCode, msg: 'simulated' })
 
-/** Porta la sessione salvata dentro il margine di 90 s della libreria, senza scaderla. */
+/**
+ * Porta la sessione salvata dentro il margine di 90 s della libreria, ancora valida in questo
+ * momento ma già scaduta al primo tick di auto-refresh (30 s dall'avvio del client). Con +30 s la
+ * scadenza, arrotondata al secondo, cadeva sul tick stesso: se l'orologio simulato partiva con
+ * millisecondi ≥ 950 il token risultava ancora valido, auth-js conservava la sessione e ritentava
+ * dopo la pausa di 60 s (2 richieste invece di 1).
+ */
 function bringNearExpiry(h: Harness): void {
   const raw = h.storage.contents.get(AUTH_STORAGE_KEY)
   if (!raw) throw new Error('Nessuna sessione nello storage.')
   const session = JSON.parse(raw) as { expires_at: number }
   h.storage.contents.set(
     AUTH_STORAGE_KEY,
-    JSON.stringify({ ...session, expires_at: nowSeconds() + 30 }),
+    JSON.stringify({ ...session, expires_at: nowSeconds() + 20 }),
   )
 }
 
