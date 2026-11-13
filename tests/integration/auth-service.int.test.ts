@@ -2,13 +2,22 @@ import { randomUUID } from 'node:crypto'
 
 import { afterAll, describe, expect, it, vi } from 'vitest'
 
-import { getPasswordSetupPending } from '@/features/auth/service'
+import { getPasswordSetupPending, signOut } from '@/features/auth/service'
+import { createFakePlatform } from '@/platform/fake'
+import { AUTH_STORAGE_KEY, createSupabaseClient } from '@/shared/lib/supabaseClient'
 
 import { SUBJECT_CONFIRMATION, waitForMail } from './mail'
-import { createAdminClient, createAnonClient, PRIVACY_VERSION } from './support'
+import {
+  anonKey,
+  createAdminClient,
+  createAnonClient,
+  PRIVACY_VERSION,
+  supabaseUrl,
+} from './support'
 
-// A4 · `getPasswordSetupPending` (SPECIFICA §20 M3, decisione A4 3) con GoTrue, PostgREST, RLS e Mailpit
-// REALI. Utenti e password sono generati a runtime e rimossi a fine test.
+// A4 · service di autenticazione (SPECIFICA §20 M3): `getPasswordSetupPending` (decisione A4 3) e
+// `signOut` (decisione A4 4) con GoTrue, PostgREST, RLS e Mailpit REALI. Utenti e password sono
+// generati a runtime e rimossi a fine test.
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 })
 
 const admin = createAdminClient()
@@ -100,4 +109,92 @@ describe('getPasswordSetupPending con Supabase reale', () => {
       status: 'pending',
     })
   })
+})
+
+/** Client dell'app con storage ispezionabile, autenticato con email e password. */
+async function signedInClient(email: string, password: string) {
+  const platform = createFakePlatform()
+  const client = createSupabaseClient({
+    url: supabaseUrl(),
+    anonKey: anonKey(),
+    storage: platform.secureStorage,
+    platform: 'web',
+    appVersion: 'integration-test',
+  })
+  const signIn = await client.auth.signInWithPassword({ email, password })
+  if (signIn.error) throw signIn.error
+  return { client, platform }
+}
+
+/** Stesso utente con due sessioni: A (quella che esegue `signOut`) e B (un altro dispositivo). */
+async function userWithTwoSessions(label: string) {
+  const email = newEmail(label)
+  const password = newPassword()
+  const { data, error } = await admin.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+    user_metadata: { privacy_version: PRIVACY_VERSION },
+  })
+  if (error || !data.user) throw error ?? new Error('createUser fallita')
+  userIds.add(data.user.id)
+  const a = await signedInClient(email, password)
+  const b = await signedInClient(email, password)
+  return { userId: data.user.id, a, b }
+}
+
+describe('signOut con GoTrue reale (caratterizzazione auth-js 2.117.3, solo locale)', () => {
+  it('local: ends only the current session; the other session can still refresh', async () => {
+    const { a, b } = await userWithTwoSessions('local')
+
+    expect(await signOut(a.client, 'local')).toEqual({ status: 'no_error' })
+
+    expect(a.platform.storageContents.has(AUTH_STORAGE_KEY)).toBe(false)
+    const refreshB = await b.client.auth.refreshSession()
+    expect(refreshB.error).toBeNull()
+    expect(refreshB.data.session).not.toBeNull()
+  })
+
+  it('global: ends the current session and revokes the refresh token of the others', async () => {
+    const { userId, a, b } = await userWithTwoSessions('global')
+
+    expect(await signOut(a.client, 'global')).toEqual({ status: 'no_error' })
+
+    expect(a.platform.storageContents.has(AUTH_STORAGE_KEY)).toBe(false)
+    // L'access token già emesso a B resta valido fino a `exp` (Decisione A4 4): la lettura passa.
+    expect(await getPasswordSetupPending(b.client, userId)).toEqual({ status: 'completed' })
+    // Il refresh token di B invece è revocato.
+    const refreshB = await b.client.auth.refreshSession()
+    expect(refreshB.error).not.toBeNull()
+    expect(refreshB.data.session).toBeNull()
+  })
+
+  it('others: keeps the current session and revokes the refresh token of the others', async () => {
+    const { userId, a, b } = await userWithTwoSessions('others')
+    const storedBefore = a.platform.storageContents.get(AUTH_STORAGE_KEY)
+
+    expect(await signOut(a.client, 'others')).toEqual({ status: 'no_error' })
+
+    expect(a.platform.storageContents.get(AUTH_STORAGE_KEY)).toBe(storedBefore)
+    expect((await a.client.auth.getUser()).data.user?.id).toBe(userId)
+    const refreshA = await a.client.auth.refreshSession()
+    expect(refreshA.error).toBeNull()
+
+    const refreshB = await b.client.auth.refreshSession()
+    expect(refreshB.error).not.toBeNull()
+    expect(refreshB.data.session).toBeNull()
+  })
+
+  it.each(['local', 'others'] as const)(
+    'returns no_error with %s even when the server rejects the logout (user deleted)',
+    async (scope) => {
+      // auth-js ignora 401/403/404: `no_error` non certifica la revoca remota (Decisione A4 4).
+      const { userId, a } = await userWithTwoSessions(`deleted-${scope}`)
+      await admin.auth.admin.deleteUser(userId)
+      userIds.delete(userId)
+
+      expect(await signOut(a.client, scope)).toEqual({ status: 'no_error' })
+      expect(a.platform.storageContents.has(AUTH_STORAGE_KEY)).toBe(scope === 'others')
+    },
+  )
 })

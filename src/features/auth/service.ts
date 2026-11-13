@@ -1,6 +1,8 @@
 import { AppError, toAppError } from '@/shared/lib/errors'
 import type { AppSupabaseClient } from '@/shared/lib/supabaseClient'
 
+import { toAuthAppError } from './errors'
+
 /**
  * Service di autenticazione (A4, SPECIFICA §20 M3). Funzioni pure su `AppSupabaseClient`: non
  * modificano Pinia, cache, storage applicativo o router e non traducono gli esiti negli stati
@@ -60,5 +62,53 @@ export async function getPasswordSetupPending(
     return unreadable(new AppError('unknown', { cause: value }))
   } catch (error) {
     return unreadable(toAppError(error))
+  }
+}
+
+/**
+ * Scope di `signOut` (SPECIFICA §20 M3, Decisione A4 4):
+ *  - `local`: termina la sessione corrente (il normale «Esci»);
+ *  - `global`: revoca i refresh token di tutte le sessioni dell'utente (azione distinta e deliberata);
+ *  - `others`: termina le altre sessioni e conserva quella corrente (G.10, dopo il cambio password).
+ */
+export type SignOutScope = 'local' | 'global' | 'others'
+
+const SIGN_OUT_SCOPES: ReadonlySet<string> = new Set<SignOutScope>(['local', 'global', 'others'])
+
+/**
+ * Esito di `signOut`, distinto dagli eventi e dalla diagnostica della sessione locale:
+ *  - `no_error`: auth-js non ha esposto errori. NON certifica la revoca remota: auth-js 2.117.3
+ *    ignora gli errori HTTP 401/403/404 e la sessione mancante, e senza sessione non chiama il server;
+ *  - `auth_error`: auth-js ha restituito un errore (`AppError` di `toAuthAppError`, originale in `cause`);
+ *  - `exception`: la chiamata ha lanciato un'eccezione, oppure lo scope non è valido.
+ */
+export type SignOutResult =
+  | { readonly status: 'no_error' }
+  | { readonly status: 'auth_error'; readonly error: AppError }
+  | { readonly status: 'exception'; readonly error: AppError }
+
+/**
+ * Inoltra `signOut` a Supabase Auth con lo scope indicato, obbligatorio e senza default implicito.
+ * Non modifica Pinia, cache, storage applicativo o router e non deduce lo stato locale: con
+ * `local`/`global` è auth-js a rimuovere la sessione locale (anche dopo alcuni errori), con `others`
+ * no. Non lancia mai eccezioni verso il chiamante.
+ */
+export async function signOut(
+  client: AppSupabaseClient,
+  scope: SignOutScope,
+): Promise<SignOutResult> {
+  // Controllo anche a runtime: con `{ scope: undefined }` auth-js 2.117.3 userebbe `global` e
+  // chiuderebbe tutte le sessioni dell'utente. Uno scope non valido non arriva mai ad Auth.
+  if (!SIGN_OUT_SCOPES.has(scope)) {
+    const cause = new TypeError(`signOut: scope non valido (${String(scope)})`)
+    return { status: 'exception', error: new AppError('unknown', { cause }) }
+  }
+
+  try {
+    const { error } = await client.auth.signOut({ scope })
+    if (error) return { status: 'auth_error', error: toAuthAppError(error) }
+    return { status: 'no_error' }
+  } catch (error) {
+    return { status: 'exception', error: toAuthAppError(error) }
   }
 }

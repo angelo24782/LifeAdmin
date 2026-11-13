@@ -2,15 +2,25 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createFakePlatform } from '@/platform/fake'
 import { AppError, type AppErrorCode } from '@/shared/lib/errors'
-import { createSupabaseClient, type AppSupabaseClient } from '@/shared/lib/supabaseClient'
+import {
+  AUTH_STORAGE_KEY,
+  createSupabaseClient,
+  type AppSupabaseClient,
+} from '@/shared/lib/supabaseClient'
 
-import { getPasswordSetupPending, type PasswordSetupPendingResult } from './service'
+import {
+  getPasswordSetupPending,
+  signOut,
+  type PasswordSetupPendingResult,
+  type SignOutResult,
+  type SignOutScope,
+} from './service'
 
 /**
- * `getPasswordSetupPending` (SPECIFICA §20 M3, decisione A4 3). Il client è quello vero
- * (`createSupabaseClient`, supabase-js 2.117.3): si simula solo la rete, così il test verifica anche
- * la richiesta inviata a PostgREST (colonna e filtro). Il comportamento con PostgREST, GoTrue e RLS
- * reali è in `tests/integration/auth-service.int.test.ts`.
+ * Service A4 (SPECIFICA §20 M3): `getPasswordSetupPending` (decisione A4 3) e `signOut` (decisione
+ * A4 4). Il client è quello vero (`createSupabaseClient`, supabase-js 2.117.3): si simula solo la
+ * rete, così il test verifica anche le richieste inviate a PostgREST e a GoTrue. Il comportamento con
+ * PostgREST, GoTrue e RLS reali è in `tests/integration/auth-service.int.test.ts`.
  */
 
 const USER_ID = '00000000-0000-4000-8000-000000000001'
@@ -186,4 +196,239 @@ describe('getPasswordSetupPending: unreadable, mai completed', () => {
     expectUnreadable(result, 'unknown')
     expect(result.error.cause).toBe(failure)
   })
+})
+
+// ---------------------------------------------------------------------------------------------
+// signOut (decisione A4 4)
+// ---------------------------------------------------------------------------------------------
+
+const SCOPES: readonly SignOutScope[] = ['local', 'global', 'others']
+
+/** JWT non firmato con scadenza lontana: sufficiente perché il client lo accetti come sessione. */
+function unsignedJwt(): string {
+  const encode = (value: object) =>
+    btoa(JSON.stringify(value)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
+  return `${encode({ alg: 'none', typ: 'JWT' })}.${encode({
+    sub: USER_ID,
+    role: 'authenticated',
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  })}.signature`
+}
+
+const sessionBody = () => ({
+  access_token: unsignedJwt(),
+  token_type: 'bearer',
+  expires_in: 3600,
+  expires_at: Math.floor(Date.now() / 1000) + 3600,
+  refresh_token: 'refresh-token',
+  user: {
+    id: USER_ID,
+    aud: 'authenticated',
+    email: 'user@example.test',
+    app_metadata: {},
+    user_metadata: {},
+    created_at: '2026-10-08T00:00:00Z',
+  },
+})
+
+/**
+ * Client vero con una sessione salvata nello storage finto. `logout` simula la risposta di
+ * `POST /auth/v1/logout`; `events` raccoglie gli eventi Auth emessi dopo il login.
+ */
+async function signedInClient(logout: () => Promise<Response>) {
+  const platform = createFakePlatform()
+  const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+    (input) => {
+      const url = requestUrl(input)
+      if (url.includes('/auth/v1/token')) return Promise.resolve(response(200, sessionBody()))
+      if (url.includes('/auth/v1/logout')) return logout()
+      return Promise.resolve(response(200, []))
+    },
+  )
+  vi.stubGlobal('fetch', fetchMock)
+  const client = createSupabaseClient({
+    url: 'http://127.0.0.1:54321',
+    anonKey: 'anon-key',
+    storage: platform.secureStorage,
+    platform: 'web',
+    appVersion: '0.0.0',
+  })
+  const signIn = await client.auth.signInWithPassword({
+    email: 'user@example.test',
+    password: 'irrelevant',
+  })
+  if (signIn.error) throw signIn.error
+
+  const events: string[] = []
+  client.auth.onAuthStateChange((event) => {
+    events.push(event)
+  })
+  await vi.waitFor(() => {
+    expect(events).toContain('INITIAL_SESSION')
+  })
+  events.length = 0
+
+  const logoutCalls = () =>
+    fetchMock.mock.calls
+      .map(([input, init]) => ({ url: new URL(requestUrl(input)), init }))
+      .filter(({ url }) => url.pathname === '/auth/v1/logout')
+
+  return { client, platform, events, logoutCalls }
+}
+
+const noContent = () => Promise.resolve(new Response(null, { status: 204 }))
+
+describe('signOut: richiesta e conseguenze locali per ogni scope', () => {
+  it.each(SCOPES)('sends POST /auth/v1/logout?scope=%s with the access token', async (scope) => {
+    const { client, logoutCalls } = await signedInClient(noContent)
+
+    expect(await signOut(client, scope)).toEqual({ status: 'no_error' })
+
+    const calls = logoutCalls()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.url.searchParams.get('scope')).toBe(scope)
+    expect(calls[0]?.init?.method).toBe('POST')
+    expect(new Headers(calls[0]?.init?.headers).get('authorization')).toMatch(/^Bearer /)
+  })
+
+  it.each(['local', 'global'] as const)(
+    'with %s auth-js removes the local session and emits SIGNED_OUT',
+    async (scope) => {
+      const { client, platform, events } = await signedInClient(noContent)
+
+      await signOut(client, scope)
+
+      expect(platform.storageContents.has(AUTH_STORAGE_KEY)).toBe(false)
+      expect(events).toEqual(['SIGNED_OUT'])
+    },
+  )
+
+  it('with others keeps the local session and emits no event', async () => {
+    const { client, platform, events } = await signedInClient(noContent)
+    const before = platform.storageContents.get(AUTH_STORAGE_KEY)
+
+    await signOut(client, 'others')
+
+    expect(platform.storageContents.get(AUTH_STORAGE_KEY)).toBe(before)
+    expect(events).toEqual([])
+  })
+
+  it.each(SCOPES)(
+    'without a session (%s) calls no endpoint and returns no_error',
+    async (scope) => {
+      const fetchMock = vi.fn(() => noContent())
+      vi.stubGlobal('fetch', fetchMock)
+      const client = createSupabaseClient({
+        url: 'http://127.0.0.1:54321',
+        anonKey: 'anon-key',
+        storage: createFakePlatform().secureStorage,
+        platform: 'web',
+        appVersion: '0.0.0',
+      })
+
+      expect(await signOut(client, scope)).toEqual({ status: 'no_error' })
+      expect(fetchMock).not.toHaveBeenCalled()
+    },
+  )
+})
+
+const IGNORED = [
+  { status: 401, code: 'bad_jwt' },
+  { status: 403, code: 'user_not_found' },
+  { status: 404, code: 'user_not_found' },
+] as const
+
+describe('signOut: errori che auth-js 2.117.3 ignora (nessuna conferma della revoca remota)', () => {
+  it.each(SCOPES.flatMap((scope) => IGNORED.map((c) => ({ scope, ...c }))))(
+    'HTTP $status ($code) with $scope returns no_error',
+    async ({ scope, status, code }) => {
+      const { client, platform, logoutCalls } = await signedInClient(() =>
+        Promise.resolve(response(status, { code, msg: 'server message' })),
+      )
+
+      expect(await signOut(client, scope)).toEqual({ status: 'no_error' })
+      // La richiesta è partita e il server ha rifiutato, ma l'esito non lo dice: limite documentato.
+      expect(logoutCalls()).toHaveLength(1)
+      expect(platform.storageContents.has(AUTH_STORAGE_KEY)).toBe(scope === 'others')
+    },
+  )
+})
+
+const RETURNED = [
+  {
+    label: 'HTTP 400 validation_failed (codice non mappato)',
+    reply: () => Promise.resolve(response(400, { code: 'validation_failed', msg: 'bad scope' })),
+    code: 'unknown',
+  },
+  {
+    // auth-js 2.117.3 tratta 500–504 e 520–530 come errori di rete (`AuthRetryableFetchError`).
+    label: 'HTTP 500',
+    reply: () => Promise.resolve(response(500, { code: 'unexpected_failure', msg: 'boom' })),
+    code: 'network',
+  },
+  {
+    label: 'HTTP 429',
+    reply: () =>
+      Promise.resolve(response(429, { code: 'over_request_rate_limit', msg: 'slow down' })),
+    code: 'rate_limited',
+  },
+  {
+    label: 'rete assente',
+    reply: () => Promise.reject(new TypeError('fetch failed')),
+    code: 'network',
+  },
+] as const
+
+describe('signOut: errori restituiti da auth-js', () => {
+  it.each(SCOPES.flatMap((scope) => RETURNED.map((c) => ({ scope, ...c }))))(
+    '$label with $scope returns auth_error ($code); auth-js keeps the key only for others',
+    async ({ scope, reply, code }) => {
+      const { client, platform } = await signedInClient(reply)
+
+      const result = await signOut(client, scope)
+
+      expect(result.status).toBe('auth_error')
+      if (result.status === 'auth_error') {
+        expect(result.error).toBeInstanceOf(AppError)
+        expect(result.error.code).toBe(code)
+        expect(result.error.cause).toBeDefined()
+      }
+      // auth-js tenta comunque la rimozione locale con local/global; con others non tocca la sessione.
+      expect(platform.storageContents.has(AUTH_STORAGE_KEY)).toBe(scope === 'others')
+    },
+  )
+})
+
+describe('signOut: eccezioni e scope non validi', () => {
+  it('returns exception when auth.signOut throws, without rethrowing', async () => {
+    const failure = new Error('lock broken')
+    const client = {
+      auth: { signOut: () => Promise.reject(failure) },
+    } as unknown as AppSupabaseClient
+
+    const result: SignOutResult = await signOut(client, 'local')
+
+    expect(result.status).toBe('exception')
+    if (result.status === 'exception') {
+      expect(result.error.code).toBe('unknown')
+      expect(result.error.cause).toBe(failure)
+    }
+  })
+
+  it.each([undefined, '', 'all', 'GLOBAL'])(
+    'rejects the invalid scope %s without calling Auth (auth-js would fall back to global)',
+    async (scope) => {
+      const authSignOut = vi.fn(() => Promise.resolve({ error: null }))
+      const client = { auth: { signOut: authSignOut } } as unknown as AppSupabaseClient
+
+      const result = await signOut(client, scope as unknown as SignOutScope)
+
+      expect(result.status).toBe('exception')
+      if (result.status === 'exception') {
+        expect(result.error.code).toBe('unknown')
+        expect(result.error.cause).toBeInstanceOf(TypeError)
+      }
+      expect(authSignOut).not.toHaveBeenCalled()
+    },
+  )
 })
