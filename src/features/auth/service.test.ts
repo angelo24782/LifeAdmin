@@ -1,5 +1,7 @@
+import { AuthSessionMissingError } from '@supabase/supabase-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { SecureStorage } from '@/platform'
 import { createFakePlatform } from '@/platform/fake'
 import { AppError, type AppErrorCode } from '@/shared/lib/errors'
 import {
@@ -10,15 +12,17 @@ import {
 
 import {
   getPasswordSetupPending,
+  setPassword,
   signOut,
   type PasswordSetupPendingResult,
+  type SetPasswordResult,
   type SignOutResult,
   type SignOutScope,
 } from './service'
 
 /**
- * Service A4 (SPECIFICA §20 M3): `getPasswordSetupPending` (decisione A4 3) e `signOut` (decisione
- * A4 4). Il client è quello vero (`createSupabaseClient`, supabase-js 2.117.3): si simula solo la
+ * Service A4 (SPECIFICA §20 M3): `getPasswordSetupPending` (decisione A4 3), `signOut` (decisione
+ * A4 4) e `setPassword` (G.10). Il client è quello vero (`createSupabaseClient`, supabase-js 2.117.3): si simula solo la
  * rete, così il test verifica anche le richieste inviate a PostgREST e a GoTrue. Il comportamento con
  * PostgREST, GoTrue e RLS reali è in `tests/integration/auth-service.int.test.ts`.
  */
@@ -27,6 +31,7 @@ const USER_ID = '00000000-0000-4000-8000-000000000001'
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 const response = (status: number, body: unknown) =>
@@ -431,4 +436,589 @@ describe('signOut: eccezioni e scope non validi', () => {
       expect(authSignOut).not.toHaveBeenCalled()
     },
   )
+})
+
+// ---------------------------------------------------------------------------------------------
+// setPassword (G.10)
+// ---------------------------------------------------------------------------------------------
+
+const OTHER_USER_ID = '00000000-0000-4000-8000-000000000002'
+const NEW_PASSWORD = 'nuova-password-di-prova'
+
+type Reply = () => Promise<Response>
+
+interface SetPasswordRoutes {
+  /** `GET /auth/v1/user` (verifica di `getUser`). */
+  readonly getUser?: Reply
+  /** `PUT /auth/v1/user` (`updateUser`). */
+  readonly putUser?: Reply
+  /** `GET /rest/v1/profiles` (rilettura di `password_setup_pending`). */
+  readonly profiles?: Reply
+  /** `POST /auth/v1/logout` (`signOut('others')`). */
+  readonly logout?: Reply
+}
+
+interface SetPasswordClientOptions {
+  /** `false`: client senza sessione salvata. */
+  readonly signedIn?: boolean
+  /** Host del client: client diversi nello stesso test hanno host diversi e risposte separate. */
+  readonly host?: string
+}
+
+const userBody = (id: unknown = USER_ID) => ({ ...sessionBody().user, id })
+
+/** Errore di GoTrue: con l'header di versione dell'API auth-js legge `code` dal corpo (come GoTrue reale). */
+const gotrueError = (status: number, body: unknown) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json', 'x-supabase-api-version': '2024-01-01' },
+  })
+const ok =
+  (body: unknown): Reply =>
+  () =>
+    Promise.resolve(response(200, body))
+const offline: Reply = () => Promise.reject(new TypeError('fetch failed'))
+const notJson =
+  (status: number): Reply =>
+  () =>
+    Promise.resolve(new Response('<html>gateway</html>', { status }))
+
+/** Smistamento per host: un solo `fetch` globale serve tutti i client creati nel test. */
+const fetchRoutes = new Map<string, (url: URL, init?: RequestInit) => Promise<Response>>()
+
+afterEach(() => {
+  fetchRoutes.clear()
+})
+
+/**
+ * Client vero, opzionalmente con una sessione salvata, per `setPassword`. `routes` simula le risposte
+ * degli endpoint usati da G.10 (default: tutto riuscito, flag `false`); `requests` elenca le richieste
+ * di questo client successive al login; `failStorage` fa fallire da quel momento le letture dello
+ * storage.
+ */
+async function setPasswordClient(
+  routes: SetPasswordRoutes = {},
+  { signedIn = true, host = '127.0.0.1:54321' }: SetPasswordClientOptions = {},
+) {
+  const platform = createFakePlatform()
+  let storageFailure: Error | null = null
+  const storage: SecureStorage = {
+    getItem: (key) =>
+      storageFailure ? Promise.reject(storageFailure) : platform.secureStorage.getItem(key),
+    setItem: (key, value) => platform.secureStorage.setItem(key, value),
+    removeItem: (key) => platform.secureStorage.removeItem(key),
+  }
+
+  const calls = vi.fn<(url: URL, init?: RequestInit) => void>()
+  fetchRoutes.set(host, (url, init) => {
+    calls(url, init)
+    const method = init?.method ?? 'GET'
+    if (url.pathname === '/auth/v1/token') return Promise.resolve(response(200, sessionBody()))
+    if (url.pathname === '/auth/v1/user' && method === 'GET') {
+      return (routes.getUser ?? ok(userBody()))()
+    }
+    if (url.pathname === '/auth/v1/user' && method === 'PUT') {
+      return (routes.putUser ?? ok(userBody()))()
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return (routes.profiles ?? ok([{ password_setup_pending: false }]))()
+    }
+    if (url.pathname === '/auth/v1/logout') return (routes.logout ?? noContent)()
+    return Promise.reject(new Error(`richiesta inattesa: ${method} ${url.pathname}`))
+  })
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(requestUrl(input))
+      const route = fetchRoutes.get(url.host)
+      if (!route) return Promise.reject(new Error(`host inatteso: ${url.host}`))
+      return route(url, init)
+    }),
+  )
+
+  const client = createSupabaseClient({
+    url: `http://${host}`,
+    anonKey: 'anon-key',
+    storage,
+    platform: 'web',
+    appVersion: '0.0.0',
+  })
+  if (signedIn) {
+    const signIn = await client.auth.signInWithPassword({
+      email: 'user@example.test',
+      password: 'irrelevant',
+    })
+    if (signIn.error) throw signIn.error
+  }
+  calls.mockClear()
+
+  const requests = () =>
+    calls.mock.calls.map(([url, init]) => ({
+      method: init?.method ?? 'GET',
+      path: url.pathname,
+      url,
+      init,
+    }))
+  const putCount = () =>
+    requests().filter((r) => r.path === '/auth/v1/user' && r.method === 'PUT').length
+
+  return {
+    client,
+    platform,
+    requests,
+    putCount,
+    failStorage: (error: Error) => {
+      storageFailure = error
+    },
+  }
+}
+
+const run = (client: AppSupabaseClient, expectedUserId = USER_ID) =>
+  setPassword(client, { password: NEW_PASSWORD, expectedUserId })
+
+function expectError(
+  result: SetPasswordResult,
+  status: 'session_missing' | 'update_failed' | 'update_outcome_unknown',
+  code: AppErrorCode,
+): asserts result is Extract<SetPasswordResult, { status: typeof status }> {
+  expect(result.status).toBe(status)
+  if (!('error' in result)) return
+  expect(result.error).toBeInstanceOf(AppError)
+  expect(result.error.code).toBe(code)
+}
+
+function expectVerificationFailed(
+  result: SetPasswordResult,
+  reason: 'server_rejected' | 'request_failed' | 'exception',
+  code: AppErrorCode,
+): asserts result is Extract<SetPasswordResult, { status: 'verification_failed' }> {
+  expect(result.status).toBe('verification_failed')
+  if (result.status !== 'verification_failed') return
+  expect(result.reason).toBe(reason)
+  expect(result.error).toBeInstanceOf(AppError)
+  expect(result.error.code).toBe(code)
+}
+
+describe('setPassword: successo', () => {
+  it('sends GET user, PUT user, GET profiles and POST logout?scope=others in this order', async () => {
+    const { client, platform, requests } = await setPasswordClient()
+
+    expect(await run(client)).toEqual({ status: 'changed' })
+
+    const sent = requests()
+    expect(sent.map((r) => `${r.method} ${r.path}`)).toEqual([
+      'GET /auth/v1/user',
+      'PUT /auth/v1/user',
+      'GET /rest/v1/profiles',
+      'POST /auth/v1/logout',
+    ])
+    for (const request of sent) {
+      expect(new Headers(request.init?.headers).get('authorization')).toMatch(/^Bearer /)
+    }
+    const putBody = sent[1]?.init?.body
+    expect(typeof putBody).toBe('string')
+    expect(JSON.parse(typeof putBody === 'string' ? putBody : '')).toMatchObject({
+      password: NEW_PASSWORD,
+    })
+    expect([...(sent[2]?.url.searchParams.entries() ?? [])]).toEqual([
+      ['select', 'password_setup_pending'],
+      ['id', `eq.${USER_ID}`],
+    ])
+    expect(sent[3]?.url.searchParams.get('scope')).toBe('others')
+    // `others` conserva la sessione corrente (auth-js la riscrive dopo `updateUser`).
+    expect(platform.storageContents.has(AUTH_STORAGE_KEY)).toBe(true)
+  })
+})
+
+describe('setPassword: verifica con getUser fallita, nessuna PUT /auth/v1/user', () => {
+  it('returns session_missing without any request when there is no session', async () => {
+    const { client, requests } = await setPasswordClient({}, { signedIn: false })
+
+    expectError(await run(client), 'session_missing', 'unauthenticated')
+    expect(requests()).toEqual([])
+  })
+
+  it('returns session_missing when GoTrue answers session_not_found', async () => {
+    const { client, putCount } = await setPasswordClient({
+      getUser: () =>
+        Promise.resolve(gotrueError(403, { code: 'session_not_found', msg: 'session gone' })),
+    })
+
+    expectError(await run(client), 'session_missing', 'unauthenticated')
+    expect(putCount()).toBe(0)
+  })
+
+  it.each([
+    ['user_not_found', 403],
+    ['bad_jwt', 401],
+  ] as const)('returns verification_failed (server_rejected) for %s', async (code, status) => {
+    const { client, putCount } = await setPasswordClient({
+      getUser: () => Promise.resolve(gotrueError(status, { code, msg: 'rejected' })),
+    })
+
+    const result = await run(client)
+
+    expectVerificationFailed(result, 'server_rejected', 'unauthenticated')
+    expect(result.error.cause).toMatchObject({ code, status })
+    expect(putCount()).toBe(0)
+  })
+
+  it.each([
+    { label: 'rete assente', reply: offline, code: 'network' },
+    {
+      label: 'HTTP 500',
+      reply: () => Promise.resolve(gotrueError(500, { code: 'unexpected_failure', msg: 'boom' })),
+      code: 'network',
+    },
+    {
+      label: 'HTTP 429',
+      reply: () =>
+        Promise.resolve(gotrueError(429, { code: 'over_request_rate_limit', msg: 'slow down' })),
+      code: 'rate_limited',
+    },
+    { label: 'HTTP 200 con JSON non valido', reply: notJson(200), code: 'network' },
+    {
+      label: 'HTTP 400 con JSON non valido (AuthUnknownError)',
+      reply: notJson(400),
+      code: 'unknown',
+    },
+    {
+      label: 'HTTP 400 senza codice',
+      reply: () => Promise.resolve(gotrueError(400, { msg: 'bad request' })),
+      code: 'unknown',
+    },
+  ] as const)(
+    'returns verification_failed (request_failed) for $label',
+    async ({ reply, code }) => {
+      const { client, putCount } = await setPasswordClient({ getUser: reply })
+
+      const result = await run(client)
+
+      expectVerificationFailed(result, 'request_failed', code)
+      expect(result.error.cause).toBeDefined()
+      expect(putCount()).toBe(0)
+    },
+  )
+
+  it.each([
+    ['without id', { email: 'user@example.test' }],
+    ['with a numeric id', userBody(42)],
+  ] as const)(
+    'returns verification_failed (request_failed, unknown) for a user %s',
+    async (_label, body) => {
+      const { client, putCount } = await setPasswordClient({ getUser: ok(body) })
+
+      const result = await run(client)
+
+      expectVerificationFailed(result, 'request_failed', 'unknown')
+      expect(result.error.cause).toMatchObject({ email: 'user@example.test' })
+      expect(putCount()).toBe(0)
+    },
+  )
+
+  it('returns verification_failed (request_failed, unknown) when getUser returns no user', async () => {
+    const { client, putCount } = await setPasswordClient()
+    vi.spyOn(client.auth, 'getUser').mockResolvedValue({
+      data: { user: null },
+      error: null,
+    } as unknown as Awaited<ReturnType<AppSupabaseClient['auth']['getUser']>>)
+
+    const result = await run(client)
+
+    expectVerificationFailed(result, 'request_failed', 'unknown')
+    expect(result.error.cause).toBeNull()
+    expect(putCount()).toBe(0)
+  })
+
+  it('returns verification_failed (exception) when the storage throws', async () => {
+    const { client, putCount, failStorage } = await setPasswordClient()
+    const failure = new Error('storage broken')
+    failStorage(failure)
+
+    const result = await run(client)
+
+    expectVerificationFailed(result, 'exception', 'unknown')
+    expect(result.error.cause).toBe(failure)
+    expect(putCount()).toBe(0)
+  })
+
+  it('returns verification_failed (exception) when getUser throws', async () => {
+    const { client, putCount } = await setPasswordClient()
+    const failure = new Error('getUser broken')
+    vi.spyOn(client.auth, 'getUser').mockRejectedValue(failure)
+
+    const result = await run(client)
+
+    expectVerificationFailed(result, 'exception', 'unknown')
+    expect(result.error.cause).toBe(failure)
+    expect(putCount()).toBe(0)
+  })
+
+  it('returns user_mismatch when the server returns another user', async () => {
+    const { client, putCount } = await setPasswordClient({ getUser: ok(userBody(OTHER_USER_ID)) })
+
+    expect(await run(client)).toEqual({ status: 'user_mismatch' })
+    expect(putCount()).toBe(0)
+  })
+
+  it('compares the id strictly (no case folding or trimming)', async () => {
+    const { client, putCount } = await setPasswordClient()
+
+    expect(await run(client, ` ${USER_ID.toUpperCase()}`)).toEqual({ status: 'user_mismatch' })
+    expect(putCount()).toBe(0)
+  })
+})
+
+const afterPut = (requests: () => readonly { path: string }[]) =>
+  requests().filter((r) => r.path === '/rest/v1/profiles' || r.path === '/auth/v1/logout')
+
+describe('setPassword: updateUser rifiutato in modo esplicito (update_failed)', () => {
+  it.each([
+    {
+      label: 'HTTP 422 weak_password',
+      reply: () =>
+        Promise.resolve(
+          gotrueError(422, {
+            code: 'weak_password',
+            msg: 'weak',
+            weak_password: { reasons: ['length'] },
+          }),
+        ),
+      code: 'weak_password',
+    },
+    {
+      label: 'HTTP 422 same_password (altro 4xx)',
+      reply: () => Promise.resolve(gotrueError(422, { code: 'same_password', msg: 'same' })),
+      code: 'unknown',
+    },
+    {
+      label: 'HTTP 429',
+      reply: () =>
+        Promise.resolve(gotrueError(429, { code: 'over_request_rate_limit', msg: 'slow down' })),
+      code: 'rate_limited',
+    },
+    {
+      label: 'HTTP 403 session_not_found',
+      reply: () => Promise.resolve(gotrueError(403, { code: 'session_not_found', msg: 'gone' })),
+      code: 'unauthenticated',
+    },
+  ] as const)('$label returns update_failed ($code)', async ({ reply, code }) => {
+    const { client, requests, putCount } = await setPasswordClient({ putUser: reply })
+
+    expectError(await run(client), 'update_failed', code)
+    expect(putCount()).toBe(1)
+    expect(afterPut(requests)).toEqual([])
+  })
+
+  it('returns update_failed when updateUser reports a missing session (no request sent)', async () => {
+    const { client, requests } = await setPasswordClient()
+    vi.spyOn(client.auth, 'updateUser').mockResolvedValue({
+      data: { user: null },
+      error: new AuthSessionMissingError(),
+    })
+
+    expectError(await run(client), 'update_failed', 'unauthenticated')
+    expect(afterPut(requests)).toEqual([])
+  })
+})
+
+describe('setPassword: esito di updateUser incerto (update_outcome_unknown)', () => {
+  it.each([
+    { label: 'rete assente', reply: offline, code: 'network' },
+    ...([500, 502, 503] as const).map((status) => ({
+      label: `HTTP ${String(status)}`,
+      reply: () =>
+        Promise.resolve(gotrueError(status, { code: 'unexpected_failure', msg: 'boom' })),
+      code: 'network' as const,
+    })),
+    {
+      label: 'HTTP 505 (AuthApiError con status >= 500)',
+      reply: () => Promise.resolve(gotrueError(505, { code: 'unexpected_failure', msg: 'boom' })),
+      code: 'unknown',
+    },
+    { label: 'HTTP 200 non JSON', reply: notJson(200), code: 'network' },
+    { label: 'HTTP 400 non JSON (AuthUnknownError)', reply: notJson(400), code: 'unknown' },
+  ] as const)('$label returns update_outcome_unknown ($code)', async ({ reply, code }) => {
+    const { client, requests, putCount } = await setPasswordClient({ putUser: reply })
+
+    expectError(await run(client), 'update_outcome_unknown', code)
+    expect(putCount()).toBe(1)
+    expect(afterPut(requests)).toEqual([])
+  })
+
+  it('returns update_outcome_unknown when updateUser throws', async () => {
+    const { client, requests } = await setPasswordClient()
+    const failure = new Error('updateUser broken')
+    vi.spyOn(client.auth, 'updateUser').mockRejectedValue(failure)
+
+    const result = await run(client)
+
+    expectError(result, 'update_outcome_unknown', 'unknown')
+    expect(result.error.cause).toBe(failure)
+    expect(afterPut(requests)).toEqual([])
+  })
+})
+
+describe('setPassword: passi dopo il cambio, mai un fallimento', () => {
+  it.each([
+    ['pending', ok([{ password_setup_pending: true }]), { status: 'pending' }],
+    ['profile_missing', ok([]), { status: 'profile_missing' }],
+  ] as const)(
+    'returns changed_with_warnings when the reread gives %s, and still signs out the others',
+    async (_label, profiles, passwordSetup) => {
+      const { client, requests } = await setPasswordClient({ profiles })
+
+      expect(await run(client)).toEqual({
+        status: 'changed_with_warnings',
+        passwordSetup,
+        signOutOthers: { status: 'no_error' },
+      })
+      expect(requests().filter((r) => r.path === '/auth/v1/logout')).toHaveLength(1)
+    },
+  )
+
+  it('returns changed_with_warnings when the reread is unreadable (network), and still signs out', async () => {
+    const { client, requests } = await setPasswordClient({ profiles: offline })
+    // postgrest-js ripete la GET fallita per rete (attese 1/2/4 s): orologio simulato.
+    vi.useFakeTimers()
+    try {
+      const pending = run(client)
+      // Non `runAllTimersAsync`: il ticker di auto-refresh di auth-js non finirebbe mai.
+      await vi.advanceTimersByTimeAsync(8_000)
+      const result = await pending
+
+      expect(result.status).toBe('changed_with_warnings')
+      if (result.status === 'changed_with_warnings') {
+        expectUnreadable(result.passwordSetup, 'network')
+        expect(result.signOutOthers).toEqual({ status: 'no_error' })
+      }
+      expect(requests().filter((r) => r.path === '/rest/v1/profiles')).toHaveLength(4)
+      expect(requests().filter((r) => r.path === '/auth/v1/logout')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('returns changed_with_warnings when signOut others returns an error (HTTP 500)', async () => {
+    const { client, platform } = await setPasswordClient({
+      logout: () => Promise.resolve(gotrueError(500, { code: 'unexpected_failure', msg: 'boom' })),
+    })
+
+    const result = await run(client)
+
+    expect(result.status).toBe('changed_with_warnings')
+    if (result.status === 'changed_with_warnings') {
+      expect(result.passwordSetup).toEqual({ status: 'completed' })
+      expect(result.signOutOthers.status).toBe('auth_error')
+      if (result.signOutOthers.status === 'auth_error') {
+        expect(result.signOutOthers.error.code).toBe('network')
+      }
+    }
+    expect(platform.storageContents.has(AUTH_STORAGE_KEY)).toBe(true)
+  })
+
+  it('returns changed_with_warnings when signOut others throws', async () => {
+    const { client } = await setPasswordClient()
+    const failure = new Error('signOut broken')
+    const authSignOut = vi.spyOn(client.auth, 'signOut').mockRejectedValue(failure)
+
+    const result = await run(client)
+
+    expect(result.status).toBe('changed_with_warnings')
+    if (result.status === 'changed_with_warnings') {
+      expect(result.passwordSetup).toEqual({ status: 'completed' })
+      expect(result.signOutOthers.status).toBe('exception')
+      if (result.signOutOthers.status === 'exception') {
+        expect(result.signOutOthers.error.cause).toBe(failure)
+      }
+    }
+    expect(authSignOut).toHaveBeenCalledWith({ scope: 'others' })
+  })
+})
+
+/** Risposta controllata dal test: resta in sospeso finché non si chiama `release`. */
+function deferredReply(body: unknown) {
+  const resolvers: ((value: Response) => void)[] = []
+  const reply: Reply = () =>
+    new Promise<Response>((resolve) => {
+      resolvers.push(resolve)
+    })
+  const release = () => {
+    for (const resolve of resolvers.splice(0)) resolve(response(200, body))
+  }
+  return { reply, release }
+}
+
+describe('setPassword: concorrenza per istanza di client', () => {
+  it('returns already_running for a second call on the same client, without new requests', async () => {
+    const gate = deferredReply(userBody())
+    const { client, requests } = await setPasswordClient({ getUser: gate.reply })
+
+    const first = run(client)
+    await vi.waitFor(() => {
+      expect(requests()).toHaveLength(1)
+    })
+
+    expect(await run(client)).toEqual({ status: 'already_running' })
+    expect(requests()).toHaveLength(1)
+
+    gate.release()
+    expect(await first).toEqual({ status: 'changed' })
+  })
+
+  it('accepts a new call after a successful one', async () => {
+    const { client, putCount } = await setPasswordClient()
+
+    expect(await run(client)).toEqual({ status: 'changed' })
+    expect(await run(client)).toEqual({ status: 'changed' })
+    expect(putCount()).toBe(2)
+  })
+
+  it('releases the lock after a failed verification', async () => {
+    let failNext = true
+    const { client, putCount } = await setPasswordClient({
+      getUser: () => {
+        if (!failNext) return Promise.resolve(response(200, userBody()))
+        failNext = false
+        return Promise.resolve(gotrueError(500, { code: 'unexpected_failure', msg: 'boom' }))
+      },
+    })
+
+    expectVerificationFailed(await run(client), 'request_failed', 'network')
+    expect(await run(client)).toEqual({ status: 'changed' })
+    expect(putCount()).toBe(1)
+  })
+
+  it('releases the lock after an exception', async () => {
+    const { client, putCount } = await setPasswordClient()
+    vi.spyOn(client.auth, 'getUser').mockRejectedValueOnce(new Error('getUser broken'))
+
+    expectVerificationFailed(await run(client), 'exception', 'unknown')
+    expect(await run(client)).toEqual({ status: 'changed' })
+    expect(putCount()).toBe(1)
+  })
+
+  it('does not block different clients running in parallel', async () => {
+    const gateA = deferredReply(userBody())
+    const gateB = deferredReply(userBody())
+    const a = await setPasswordClient({ getUser: gateA.reply }, { host: '127.0.0.1:54321' })
+    const b = await setPasswordClient({ getUser: gateB.reply }, { host: '127.0.0.2:54321' })
+
+    const first = run(a.client)
+    const second = run(b.client)
+    // Entrambe le verifiche sono partite mentre l'altra è ancora in sospeso.
+    await vi.waitFor(() => {
+      expect(a.requests()).toHaveLength(1)
+      expect(b.requests()).toHaveLength(1)
+    })
+    gateA.release()
+    gateB.release()
+
+    expect(await Promise.all([first, second])).toEqual([
+      { status: 'changed' },
+      { status: 'changed' },
+    ])
+    expect(a.putCount()).toBe(1)
+    expect(b.putCount()).toBe(1)
+  })
 })
